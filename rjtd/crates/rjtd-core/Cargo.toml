@@ -1,0 +1,12 @@
+[package]
+name = "rjtd-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cfb = "0.14"
+
+[lints]
+workspace = true

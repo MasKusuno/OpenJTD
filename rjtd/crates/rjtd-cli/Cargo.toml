@@ -1,0 +1,21 @@
+[package]
+name = "rjtd-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rjtd"
+path = "src/main.rs"
+
+[dependencies]
+rjtd-core = { path = "../rjtd-core" }
+rjtd-export = { path = "../rjtd-export" }
+rjtd-model = { path = "../rjtd-model" }
+
+[dev-dependencies]
+cfb = "0.14"
+
+[lints]
+workspace = true

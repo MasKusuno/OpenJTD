@@ -1,0 +1,17 @@
+/.omx/
+/.cargo-home/
+/.DS_Store
+/tmp/
+/rhwp/
+/third-party/
+/target/
+/rjtd/target/
+/rjtd-testdata/local-samples/*.jtd
+/rjtd-testdata/local-samples/*.jtt
+/rjtd-testdata/local-samples/*.jttc
+**/*.rs.bk
+
+# Generated sample outputs
+/openjtd-samples/pdf-output/
+
+*.ko.md
