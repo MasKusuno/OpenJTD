@@ -32,6 +32,15 @@ const OBJECT_STREAM_REFERENCE_ROW_LIMIT: usize = 16;
 const FDM_INDEX_HEADER_BYTES: usize = 20;
 const FDM_INDEX_ENTRY_BYTES: usize = 22;
 const FDM_INDEX_DECLARED_COUNT_OFFSET: usize = 18;
+const FRAME_RECORD_HEADER_BYTES: usize = 16;
+const FRAME_RECORD_BYTES: usize = 60;
+const FRAME_RECORD_DECLARED_COUNT_OFFSET: usize = 14;
+const FRAME_RECORD_ID_OFFSET: usize = 6;
+const FRAME_RECORD_TYPE_OFFSET: usize = 12;
+const FRAME_RECORD_X_OFFSET: usize = 28;
+const FRAME_RECORD_Y_OFFSET: usize = 32;
+const FRAME_RECORD_WIDTH_OFFSET: usize = 36;
+const FRAME_RECORD_HEIGHT_OFFSET: usize = 40;
 const OBJECT_FRAME_REFERENCE_ROW_CANDIDATES: &[ObjectFrameReferenceRowProjection] = &[
     ObjectFrameReferenceRowProjection {
         encoding: "u16-le",
@@ -58,6 +67,7 @@ pub struct Document {
     unknown_styles: Vec<UnknownStyle>,
     unknown_objects: Vec<UnknownObject>,
     object_stream_candidates: Vec<ObjectStreamCandidate>,
+    object_frame_records: Vec<ObjectFrameRecordCandidate>,
     text_count_ranges: Vec<TextCountRange>,
     text_control_boundaries: Vec<TextControlBoundary>,
     text_boundary_candidates: Vec<TextBoundaryCandidate>,
@@ -73,6 +83,7 @@ impl Document {
             unknown_styles: Vec::new(),
             unknown_objects: Vec::new(),
             object_stream_candidates: Vec::new(),
+            object_frame_records: Vec::new(),
             text_count_ranges: Vec::new(),
             text_control_boundaries: Vec::new(),
             text_boundary_candidates: Vec::new(),
@@ -180,6 +191,10 @@ impl Document {
         &self.object_stream_candidates
     }
 
+    pub fn object_frame_records(&self) -> &[ObjectFrameRecordCandidate] {
+        &self.object_frame_records
+    }
+
     pub fn text_count_ranges(&self) -> &[TextCountRange] {
         &self.text_count_ranges
     }
@@ -206,6 +221,10 @@ impl Document {
 
     pub fn push_object_stream_candidate(&mut self, candidate: ObjectStreamCandidate) {
         self.object_stream_candidates.push(candidate);
+    }
+
+    pub fn push_object_frame_record(&mut self, record: ObjectFrameRecordCandidate) {
+        self.object_frame_records.push(record);
     }
 
     pub fn push_raw_stream(&mut self, stream: RawStream) {
@@ -257,6 +276,9 @@ impl DocumentParser for IchitaroParser {
         }
         for candidate in object_stream_candidates_from_cfb(data) {
             document.push_object_stream_candidate(candidate);
+        }
+        for record in object_frame_records_from_cfb(data) {
+            document.push_object_frame_record(record);
         }
         if let Ok(position_tables) = read_document_text_position_tables(data) {
             for entry in position_tables.text_count_entries() {
@@ -436,7 +458,7 @@ impl DocumentCore {
     pub fn get_document_info(&self) -> String {
         let style_candidates = text_style_candidates(self.document.unknown_styles());
         format!(
-            "{{\"version\":\"0.0.0\",\"format\":\"JTD\",\"engine\":\"rjtd\",\"sourceFormat\":\"{}\",\"fileName\":{},\"sectionCount\":1,\"pageCount\":{},\"encrypted\":false,\"hwp3Variant\":false,\"fallbackFont\":\"Hiragino Sans\",\"fontsUsed\":[\"Hiragino Sans\"],\"blockCount\":{},\"rawStreamCount\":{},\"styleStreamCount\":{},\"styleCandidateCount\":{},\"styleCandidateNames\":{},\"styleStreams\":{},\"objectStreamCandidateCount\":{},\"objectStreamCandidates\":{},\"textCountRangeCount\":{},\"textCountRanges\":{},\"textControlBoundaryCount\":{},\"textControlBoundaries\":{},\"textBoundaryCandidateCount\":{},\"textBoundaryCandidates\":{},\"textParagraphBoundaryCandidateCount\":{},\"textParagraphBoundaryCandidates\":{}}}",
+            "{{\"version\":\"0.0.0\",\"format\":\"JTD\",\"engine\":\"rjtd\",\"sourceFormat\":\"{}\",\"fileName\":{},\"sectionCount\":1,\"pageCount\":{},\"encrypted\":false,\"hwp3Variant\":false,\"fallbackFont\":\"Hiragino Sans\",\"fontsUsed\":[\"Hiragino Sans\"],\"blockCount\":{},\"rawStreamCount\":{},\"styleStreamCount\":{},\"styleCandidateCount\":{},\"styleCandidateNames\":{},\"styleStreams\":{},\"objectStreamCandidateCount\":{},\"objectStreamCandidates\":{},\"objectFrameRecordCount\":{},\"objectFrameRecords\":{},\"textCountRangeCount\":{},\"textCountRanges\":{},\"textControlBoundaryCount\":{},\"textControlBoundaries\":{},\"textBoundaryCandidateCount\":{},\"textBoundaryCandidates\":{},\"textParagraphBoundaryCandidateCount\":{},\"textParagraphBoundaryCandidates\":{}}}",
             APP_SOURCE_FORMAT,
             json_string(&self.file_name),
             self.page_count(),
@@ -448,6 +470,8 @@ impl DocumentCore {
             style_source_streams_json(self.document.unknown_styles()),
             self.document.object_stream_candidates().len(),
             object_stream_candidates_json(self.document.object_stream_candidates()),
+            self.document.object_frame_records().len(),
+            object_frame_records_json(self.document.object_frame_records()),
             self.document.text_count_ranges().len(),
             text_count_ranges_json(self.document.text_count_ranges()),
             self.document.text_control_boundaries().len(),
@@ -5613,7 +5637,28 @@ pub struct ObjectImagePayloadSpan {
     location: ObjectImagePayloadLocation,
     complete: bool,
     payload: Vec<u8>,
+    dimensions: Option<ObjectImageDimensions>,
     envelope: ObjectImagePayloadEnvelope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectImageDimensions {
+    width: u32,
+    height: u32,
+}
+
+impl ObjectImageDimensions {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    pub fn width(self) -> u32 {
+        self.width
+    }
+
+    pub fn height(self) -> u32 {
+        self.height
+    }
 }
 
 impl ObjectImagePayloadSpan {
@@ -5625,12 +5670,14 @@ impl ObjectImagePayloadSpan {
         payload: Vec<u8>,
         envelope: ObjectImagePayloadEnvelope,
     ) -> Self {
+        let dimensions = image_payload_dimensions(&payload);
         Self {
             kind: kind.into(),
             mime: mime.into(),
             location,
             complete,
             payload,
+            dimensions,
             envelope,
         }
     }
@@ -5669,6 +5716,10 @@ impl ObjectImagePayloadSpan {
 
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    pub fn dimensions(&self) -> Option<ObjectImageDimensions> {
+        self.dimensions
     }
 
     pub fn envelope(&self) -> &ObjectImagePayloadEnvelope {
@@ -5878,6 +5929,95 @@ impl ObjectFrameReferenceRowLink {
 
     pub fn matched_row_index(&self) -> usize {
         self.matched_row_index
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectFrameRecordCandidate {
+    source_path: String,
+    row_index: usize,
+    row_start: usize,
+    record_len: usize,
+    record_kind: u16,
+    declared_record_bytes: u16,
+    object_id: u16,
+    object_type: u16,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    row_prefix: Vec<u8>,
+}
+
+impl ObjectFrameRecordCandidate {
+    fn new(source_path: impl Into<String>, row_index: usize, row_start: usize, row: &[u8]) -> Self {
+        Self {
+            source_path: source_path.into(),
+            row_index,
+            row_start,
+            record_len: row.len(),
+            record_kind: read_be16_at(row, 0).unwrap_or_default(),
+            declared_record_bytes: read_be16_at(row, 2).unwrap_or_default(),
+            object_id: read_be16_at(row, FRAME_RECORD_ID_OFFSET).unwrap_or_default(),
+            object_type: read_be16_at(row, FRAME_RECORD_TYPE_OFFSET).unwrap_or_default(),
+            x: read_be16_at(row, FRAME_RECORD_X_OFFSET).unwrap_or_default(),
+            y: read_be16_at(row, FRAME_RECORD_Y_OFFSET).unwrap_or_default(),
+            width: read_be16_at(row, FRAME_RECORD_WIDTH_OFFSET).unwrap_or_default(),
+            height: read_be16_at(row, FRAME_RECORD_HEIGHT_OFFSET).unwrap_or_default(),
+            row_prefix: row[..row.len().min(OBJECT_STREAM_PREFIX_PREVIEW_BYTES)].to_vec(),
+        }
+    }
+
+    pub fn source_path(&self) -> &str {
+        &self.source_path
+    }
+
+    pub fn row_index(&self) -> usize {
+        self.row_index
+    }
+
+    pub fn row_start(&self) -> usize {
+        self.row_start
+    }
+
+    pub fn record_len(&self) -> usize {
+        self.record_len
+    }
+
+    pub fn record_kind(&self) -> u16 {
+        self.record_kind
+    }
+
+    pub fn declared_record_bytes(&self) -> u16 {
+        self.declared_record_bytes
+    }
+
+    pub fn object_id(&self) -> u16 {
+        self.object_id
+    }
+
+    pub fn object_type(&self) -> u16 {
+        self.object_type
+    }
+
+    pub fn x(&self) -> u16 {
+        self.x
+    }
+
+    pub fn y(&self) -> u16 {
+        self.y
+    }
+
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    pub fn row_prefix(&self) -> &[u8] {
+        &self.row_prefix
     }
 }
 
@@ -7123,6 +7263,53 @@ fn object_stream_candidates_from_cfb(data: &[u8]) -> Vec<ObjectStreamCandidate> 
     candidates
 }
 
+fn object_frame_records_from_cfb(data: &[u8]) -> Vec<ObjectFrameRecordCandidate> {
+    let Ok(entries) = inspect_cfb_entries(data) else {
+        return Vec::new();
+    };
+
+    let Some(entry) = entries.iter().find(|entry| {
+        entry.kind() == EntryKind::Stream && entry.path().eq_ignore_ascii_case("/Frame")
+    }) else {
+        return Vec::new();
+    };
+
+    let Ok(stream) = read_cfb_stream(data, entry.path()) else {
+        return Vec::new();
+    };
+
+    object_frame_records_from_stream(entry.path(), &stream)
+}
+
+fn object_frame_records_from_stream(path: &str, stream: &[u8]) -> Vec<ObjectFrameRecordCandidate> {
+    let Some(declared_count) =
+        read_be16_at(stream, FRAME_RECORD_DECLARED_COUNT_OFFSET).map(usize::from)
+    else {
+        return Vec::new();
+    };
+
+    let Some(expected_len) =
+        FRAME_RECORD_HEADER_BYTES.checked_add(declared_count.saturating_mul(FRAME_RECORD_BYTES))
+    else {
+        return Vec::new();
+    };
+    if stream.len() < expected_len {
+        return Vec::new();
+    }
+
+    (0..declared_count)
+        .filter_map(|row_index| {
+            let row_start = FRAME_RECORD_HEADER_BYTES
+                .checked_add(row_index.checked_mul(FRAME_RECORD_BYTES)?)?;
+            let row_end = row_start.checked_add(FRAME_RECORD_BYTES)?;
+            let row = stream.get(row_start..row_end)?;
+            Some(ObjectFrameRecordCandidate::new(
+                path, row_index, row_start, row,
+            ))
+        })
+        .collect()
+}
+
 fn attach_object_stream_ownership_references(
     candidates: &mut [ObjectStreamCandidate],
     streams: &[(String, Vec<u8>)],
@@ -7855,6 +8042,11 @@ fn image_payload_candidate(
         end,
         payload: stream[hit.offset()..end].to_vec(),
     })
+}
+
+fn image_payload_dimensions(payload: &[u8]) -> Option<ObjectImageDimensions> {
+    let image = image::load_from_memory(payload).ok()?;
+    Some(ObjectImageDimensions::new(image.width(), image.height()))
 }
 
 fn image_payload_envelope(
@@ -9631,6 +9823,55 @@ fn object_stream_candidates_json(candidates: &[ObjectStreamCandidate]) -> String
     output
 }
 
+fn object_frame_records_json(records: &[ObjectFrameRecordCandidate]) -> String {
+    let mut output = String::from("[");
+    for (index, record) in records.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        push_object_frame_record_candidate_json(&mut output, record);
+    }
+    output.push(']');
+    output
+}
+
+fn push_object_frame_record_candidate_json(
+    output: &mut String,
+    record: &ObjectFrameRecordCandidate,
+) {
+    output.push_str("{\"sourcePath\":");
+    output.push_str(&json_string(record.source_path()));
+    output.push_str(",\"rowIndex\":");
+    output.push_str(&record.row_index().to_string());
+    output.push_str(",\"rowStart\":");
+    output.push_str(&record.row_start().to_string());
+    output.push_str(",\"recordLen\":");
+    output.push_str(&record.record_len().to_string());
+    output.push_str(",\"recordKind\":");
+    output.push_str(&record.record_kind().to_string());
+    output.push_str(",\"recordKindHex\":");
+    output.push_str(&json_string(&format!("0x{:04x}", record.record_kind())));
+    output.push_str(",\"declaredRecordBytes\":");
+    output.push_str(&record.declared_record_bytes().to_string());
+    output.push_str(",\"objectId\":");
+    output.push_str(&record.object_id().to_string());
+    output.push_str(",\"objectType\":");
+    output.push_str(&record.object_type().to_string());
+    output.push_str(",\"objectTypeHex\":");
+    output.push_str(&json_string(&format!("0x{:04x}", record.object_type())));
+    output.push_str(",\"geometry\":{\"x\":");
+    output.push_str(&record.x().to_string());
+    output.push_str(",\"y\":");
+    output.push_str(&record.y().to_string());
+    output.push_str(",\"width\":");
+    output.push_str(&record.width().to_string());
+    output.push_str(",\"height\":");
+    output.push_str(&record.height().to_string());
+    output.push_str("},\"rowPrefixHex\":");
+    output.push_str(&json_string(&hex_bytes(record.row_prefix())));
+    output.push_str(",\"decoded\":false}");
+}
+
 fn push_object_stream_candidate_json(output: &mut String, candidate: &ObjectStreamCandidate) {
     output.push_str("{\"path\":");
     output.push_str(&json_string(candidate.path()));
@@ -9868,6 +10109,8 @@ fn push_object_image_payload_span_json(output: &mut String, span: &ObjectImagePa
     output.push_str(&span.len().to_string());
     output.push_str(",\"complete\":");
     output.push_str(if span.complete() { "true" } else { "false" });
+    output.push_str(",\"dimensions\":");
+    push_object_image_dimensions_json(output, span.dimensions());
     output.push_str(",\"objectEnvelope\":");
     push_object_image_payload_envelope_json(output, span.envelope());
     output.push_str(",\"payloadPrefixHex\":");
@@ -9875,6 +10118,18 @@ fn push_object_image_payload_span_json(output: &mut String, span: &ObjectImagePa
         &span.payload()[..span.payload().len().min(OBJECT_STREAM_PREFIX_PREVIEW_BYTES)],
     )));
     output.push_str(",\"decoded\":false}");
+}
+
+fn push_object_image_dimensions_json(output: &mut String, dimensions: Option<ObjectImageDimensions>) {
+    if let Some(dimensions) = dimensions {
+        output.push_str("{\"width\":");
+        output.push_str(&dimensions.width().to_string());
+        output.push_str(",\"height\":");
+        output.push_str(&dimensions.height().to_string());
+        output.push('}');
+    } else {
+        output.push_str("null");
+    }
 }
 
 fn push_object_image_payload_envelope_json(
@@ -11357,6 +11612,48 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_frame_records_for_fdm_link_diagnostics() {
+        let mut frame_payload = vec![
+            0x00, 0x01, 0x00, 0x04, 0x00, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x04, 0x00, 0x00,
+            0x00, 0x02,
+        ];
+        frame_payload.extend_from_slice(&frame_record_fixture(0, 0x0004, (11, 22, 33, 44)));
+        frame_payload.extend_from_slice(&frame_record_fixture(1, 0x0007, (100, 200, 300, 400)));
+        let bytes = cfb_with_streams(&[
+            ("/DocumentText", &document_text_fixture()),
+            ("/Frame", &frame_payload),
+        ]);
+
+        let document = parse_document(&bytes).unwrap();
+
+        assert_eq!(document.object_frame_records().len(), 2);
+        let record = &document.object_frame_records()[1];
+        assert_eq!(record.source_path(), "/Frame");
+        assert_eq!(record.row_index(), 1);
+        assert_eq!(record.row_start(), 76);
+        assert_eq!(record.record_len(), 60);
+        assert_eq!(record.record_kind(), 0x0102);
+        assert_eq!(record.declared_record_bytes(), 0x0038);
+        assert_eq!(record.object_id(), 1);
+        assert_eq!(record.object_type(), 0x0007);
+        assert_eq!(record.x(), 100);
+        assert_eq!(record.y(), 200);
+        assert_eq!(record.width(), 300);
+        assert_eq!(record.height(), 400);
+
+        let core = DocumentCore::from_document(document);
+        let info = core.get_document_info();
+        assert!(info.contains("\"objectFrameRecordCount\":2"));
+        assert!(info.contains("\"objectFrameRecords\":["));
+        assert!(info.contains("\"sourcePath\":\"/Frame\""));
+        assert!(info.contains("\"rowIndex\":1"));
+        assert!(info.contains("\"rowStart\":76"));
+        assert!(info.contains("\"recordKindHex\":\"0x0102\""));
+        assert!(info.contains("\"objectTypeHex\":\"0x0007\""));
+        assert!(info.contains("\"geometry\":{\"x\":100,\"y\":200,\"width\":300,\"height\":400}"));
+    }
+
+    #[test]
     fn parser_limits_fdm_index_entries_to_declared_prefix_rows() {
         let mut index_payload = vec![0; FDM_INDEX_HEADER_BYTES];
         index_payload[..4].copy_from_slice(&[0x03, 0x0b, 0x00, 0x01]);
@@ -12832,6 +13129,29 @@ mod tests {
         bytes.extend_from_slice(&bbox.1.to_be_bytes());
         bytes.extend_from_slice(&bbox.2.to_be_bytes());
         bytes.extend_from_slice(&bbox.3.to_be_bytes());
+    }
+
+    fn frame_record_fixture(
+        object_id: u16,
+        object_type: u16,
+        geometry: (u16, u16, u16, u16),
+    ) -> Vec<u8> {
+        let mut row = vec![0; FRAME_RECORD_BYTES];
+        row[0..2].copy_from_slice(&0x0102_u16.to_be_bytes());
+        row[2..4].copy_from_slice(&0x0038_u16.to_be_bytes());
+        row[FRAME_RECORD_ID_OFFSET..FRAME_RECORD_ID_OFFSET + 2]
+            .copy_from_slice(&object_id.to_be_bytes());
+        row[FRAME_RECORD_TYPE_OFFSET..FRAME_RECORD_TYPE_OFFSET + 2]
+            .copy_from_slice(&object_type.to_be_bytes());
+        row[FRAME_RECORD_X_OFFSET..FRAME_RECORD_X_OFFSET + 2]
+            .copy_from_slice(&geometry.0.to_be_bytes());
+        row[FRAME_RECORD_Y_OFFSET..FRAME_RECORD_Y_OFFSET + 2]
+            .copy_from_slice(&geometry.1.to_be_bytes());
+        row[FRAME_RECORD_WIDTH_OFFSET..FRAME_RECORD_WIDTH_OFFSET + 2]
+            .copy_from_slice(&geometry.2.to_be_bytes());
+        row[FRAME_RECORD_HEIGHT_OFFSET..FRAME_RECORD_HEIGHT_OFFSET + 2]
+            .copy_from_slice(&geometry.3.to_be_bytes());
+        row
     }
 
     fn create_parent_storages(

@@ -227,7 +227,10 @@ Priority prework:
 - [x] Add `rjtd object-fdm-image-candidates <file>` to summarize image-bearing FDMVector rows from model-owned `fdmIndexEntries`, including normalized bbox diagnostics, complete payload coverage, and explicit `renderable=false` until page placement is proven.
 - [x] Sweep `object-fdm-image-candidates`: 61 checked, 0 failures, 3 files with candidates, 3 FDM sources, 6 image-bearing rows, 13 image hits, 11 complete payloads, 5 plausible bbox rows, and 0 renderable rows. `shanai_lan` and `tounyou` account for the 5 complete/plausible rows; the finance sample has 2 JPEG signatures but 0 complete payloads and an implausible bbox.
 - [x] Expose the same FDM image rows through app-core `getPageOverlayImages` as `unplacedDiagnostics` with `imageCount:0`, `placementProven:false`, and `renderable:false`, keeping the rhwp-shaped overlay API callable without pretending page placement is decoded.
-- [ ] Correlate FDM image candidates and `Embedding N` frame candidates with page/frame/layout records before promoting any image ownership candidates into page geometry or paint resources.
+- [x] Preserve `/Frame` fixed 60-byte records as decoded-false model/export/app-core `objectFrameRecords`, including observed object id, record kind/type, and geometry-looking fields.
+- [x] Add `rjtd object-fdm-frame-links <file>` to correlate image-bearing FDMIndex rows with `/Frame` records by `fdm row index == frame object id`.
+- [x] Sweep `object-fdm-frame-links`: 61 checked, 0 failures, 3 positive files, 6 FDM image rows, 6 frame-linked rows, 0 missing-frame rows, 11 complete payloads, and 0 renderable rows.
+- [ ] Decode `/Frame` geometry units, page association, paint order, and payload-to-image selection before promoting any FDM or `Embedding N` image ownership candidates into page geometry or paint resources.
 - [ ] Recover remaining text hidden behind unknown inline formatting/control records.
 - [ ] Decode true `DocumentText` record boundaries and control semantics beyond the current token layer.
 - [ ] Explain why `MarkV.01` delta candidates 9, 29, and 30 all score strongly; current evidence does not support treating `unit + 29` as a unique stable adjustment.

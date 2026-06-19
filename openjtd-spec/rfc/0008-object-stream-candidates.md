@@ -160,10 +160,14 @@ The 61-sample `object-fdm-image-candidates` sweep succeeds with 0 failures. It f
 
 App-core `getPageOverlayImages` exposes the same FDM rows as `unplacedDiagnostics` while keeping `behind`, `front`, and `imageCount` empty/zero. Each diagnostic has `placementProven:false`, `renderable:false`, `decoded:false`, and reason `page-placement-unproven`. This keeps the rhwp-shaped overlay API callable without claiming decoded page placement or paint resources.
 
+Parser/export/app-core JSON also preserves `/Frame` fixed 60-byte records as decoded-false `objectFrameRecords`. The observed record layout has a 16-byte header, a big-endian declared count at offset 14, and 60-byte rows. The rows expose an object id, record kind/type, and geometry-looking fields, but these fields remain diagnostic until units, page association, and paint order are proven.
+
+`rjtd object-fdm-frame-links <file>` correlates image-bearing FDMIndex rows with those `/Frame` records by `fdm row index == frame object id`. The 61-sample sweep succeeds with 0 failures and finds 3 positive files, 6 FDM image rows, 6 frame-linked rows, 0 missing-frame rows, 11 complete payloads, and 0 renderable rows. This proves that the currently observed FDM image rows have a frame-record trail, but it still does not prove which image payload should be painted where on the page.
+
 ## Next Work
 
 - Decode the semantic object header fields preceding image payload signatures and connect them to `/Figure`, `/Frame`, `/LayoutBox`, and layout mark evidence.
-- Decode the coordinate-like FDMIndex diagnostic rows and correlate image-bearing FDMVector rows with page/frame/layout records before rendering FDMVector images.
+- Decode `/Frame` geometry units, page association, paint order, payload-to-image selection, and the remaining coordinate-like FDMIndex diagnostic rows before rendering FDMVector images.
 - Prove which `Embedding N` reference encoding and record-local offset is semantically authoritative before promoting ownership references into page geometry.
 - Connect preserved image payload bytes to model-level image resources only after object ownership and page geometry are proven.
 - Build real page/layer paint operations from decoded object and layout records before adding non-text PDF rendering.

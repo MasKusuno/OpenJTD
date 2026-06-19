@@ -243,6 +243,77 @@ fn object_fdm_index_path() -> PathBuf {
     write_sample(compound.into_inner().into_inner())
 }
 
+fn object_fdm_frame_link_path() -> PathBuf {
+    let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    compound
+        .create_stream("/DocumentText")
+        .unwrap()
+        .write_all(&document_text_fixture())
+        .unwrap();
+    compound.create_storage("/FigureData").unwrap();
+    compound.create_storage("/FigureData/main_data").unwrap();
+
+    let mut index = vec![
+        0x03, 0x0b, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x02,
+    ];
+    index.extend_from_slice(&0_u32.to_be_bytes());
+    index.extend_from_slice(&0x0b00_u16.to_be_bytes());
+    for value in [1_i32, 2, 3, 4] {
+        index.extend_from_slice(&value.to_be_bytes());
+    }
+    index.extend_from_slice(&32_u32.to_be_bytes());
+    index.extend_from_slice(&0x0b00_u16.to_be_bytes());
+    for value in [-1_i32, -2, 10, 20] {
+        index.extend_from_slice(&value.to_be_bytes());
+    }
+
+    let mut vector = vec![0x11; 32];
+    vector.extend_from_slice(b"head");
+    vector.extend_from_slice(b"\xff\xd8\xffdata\xff\xd9");
+    compound
+        .create_stream("/FigureData/main_data/FDMIndex")
+        .unwrap()
+        .write_all(&index)
+        .unwrap();
+    compound
+        .create_stream("/FigureData/main_data/FDMVector")
+        .unwrap()
+        .write_all(&vector)
+        .unwrap();
+
+    let mut frame = vec![
+        0x00, 0x01, 0x00, 0x04, 0x00, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00,
+        0x02,
+    ];
+    frame.extend_from_slice(&fdm_frame_record_fixture(0, 0x0004, (11, 22, 33, 44)));
+    frame.extend_from_slice(&fdm_frame_record_fixture(1, 0x0007, (100, 200, 300, 400)));
+    compound
+        .create_stream("/Frame")
+        .unwrap()
+        .write_all(&frame)
+        .unwrap();
+
+    write_sample(compound.into_inner().into_inner())
+}
+
+fn fdm_frame_record_fixture(
+    object_id: u16,
+    object_type: u16,
+    geometry: (u16, u16, u16, u16),
+) -> Vec<u8> {
+    let mut row = vec![0; 60];
+    row[0..2].copy_from_slice(&0x0102_u16.to_be_bytes());
+    row[2..4].copy_from_slice(&0x0038_u16.to_be_bytes());
+    row[6..8].copy_from_slice(&object_id.to_be_bytes());
+    row[12..14].copy_from_slice(&object_type.to_be_bytes());
+    row[28..30].copy_from_slice(&geometry.0.to_be_bytes());
+    row[32..34].copy_from_slice(&geometry.1.to_be_bytes());
+    row[36..38].copy_from_slice(&geometry.2.to_be_bytes());
+    row[40..42].copy_from_slice(&geometry.3.to_be_bytes());
+    row
+}
+
 fn object_fdm_index_shape_path() -> PathBuf {
     let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
     compound
@@ -2079,6 +2150,31 @@ fn object_fdm_image_candidates_command_reports_unplaced_image_segments() {
     ));
     assert!(stdout.contains(
         "summary\tsources=1\tcandidates=1\timage-hits=1\tcomplete-payloads=1\tbbox-plausible=1\trenderable=0\tdecoded=false"
+    ));
+}
+
+#[test]
+fn object_fdm_frame_links_command_connects_fdm_rows_to_frame_records() {
+    let path = object_fdm_frame_link_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("object-fdm-frame-links")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    fs::remove_file(&path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(
+        "object-fdm-frame-link\tsource=/FigureData/main_data/FDMVector\tindex=/FigureData/main_data/FDMIndex\trow=1\timage-hits=1\tcomplete-payloads=1\tframe-linked=true\tframe-source=/Frame\tframe-row=1\tframe-start=76\tframe-object-id=1\tframe-kind=0x0102\tframe-type=0x0007\tframe-geometry=100,200,300,400\tlink-basis=fdm-row-index-to-frame-object-id\trenderable=false\treason=page-placement-unproven\tdecoded=false"
+    ));
+    assert!(stdout.contains(
+        "summary\tsources=1\tcandidates=1\tframe-linked=1\tmissing-frame=0\tcomplete-payloads=1\trenderable=0\tdecoded=false"
     ));
 }
 

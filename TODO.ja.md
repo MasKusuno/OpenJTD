@@ -202,7 +202,10 @@ Priority prework:
 - [x] `rjtd object-fdm-image-candidates <file>` を追加し、model-owned `fdmIndexEntries` から image-bearing FDMVector rows を summarize する。normalized bbox diagnostics、complete payload coverage、page placement が証明されるまでの明示的な `renderable=false` を含む。
 - [x] `object-fdm-image-candidates` を sweep する。61 checked、0 failures、candidates 付き files 3、FDM sources 3、image-bearing rows 6、image hits 13、complete payloads 11、plausible bbox rows 5、renderable rows 0。`shanai_lan` と `tounyou` が complete/plausible rows 5 を占め、finance sample は JPEG signatures 2 を持つが complete payloads 0 と implausible bbox を持つ。
 - [x] 同じ FDM image rows を app-core `getPageOverlayImages` の `unplacedDiagnostics` として expose する。`imageCount:0`、`placementProven:false`、`renderable:false` を維持し、rhwp-shaped overlay API は callable にしつつ page placement が decoded されたようには見せない。
-- [ ] image ownership candidates を page geometry や paint resources へ promote する前に、FDM image candidates と `Embedding N` frame candidates を page/frame/layout records と相関させる。
+- [x] `/Frame` fixed 60-byte records を decoded-false model/export/app-core `objectFrameRecords` として保存する。observed object id、record kind/type、geometry-like fields を含む。
+- [x] `rjtd object-fdm-frame-links <file>` を追加し、image-bearing FDMIndex rows と `/Frame` records を `fdm row index == frame object id` で相関させる。
+- [x] `object-fdm-frame-links` を sweep する。61 checked、0 failures、positive files 3、FDM image rows 6、frame-linked rows 6、missing-frame rows 0、complete payloads 11、renderable rows 0。
+- [ ] FDM または `Embedding N` image ownership candidates を page geometry や paint resources へ promote する前に、`/Frame` geometry units、page association、paint order、payload-to-image selection を decode する。
 - [ ] unknown inline formatting/control records の背後に隠れた残り text を復元する。
 - [ ] current token layer を超えて true `DocumentText` record boundaries と control semantics を decode する。
 - [ ] `MarkV.01` delta candidates 9、29、30 が強く score する理由を説明する。現在の evidence は `unit + 29` を unique stable adjustment と扱うことを支持しない。

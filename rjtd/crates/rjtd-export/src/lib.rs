@@ -4,8 +4,9 @@ use rjtd_core::record::UnknownRecordKind;
 use rjtd_core::style_stream::{StyleStreamRecordSummary, summarize_style_stream};
 use rjtd_model::{
     Block, Document, DocumentCore, Inline, ObjectFdmIndexBbox, ObjectFdmIndexEntryCandidate,
-    ObjectFrameReferenceRowCandidate, ObjectImageHeaderFieldCandidates,
-    ObjectImageNumericHeaderField, ObjectImagePayloadEnvelope, ObjectImagePayloadSpan,
+    ObjectFrameRecordCandidate, ObjectFrameReferenceRowCandidate, ObjectImageHeaderFieldCandidates,
+    ObjectImageDimensions, ObjectImageNumericHeaderField, ObjectImagePayloadEnvelope,
+    ObjectImagePayloadSpan,
     ObjectImageSourcePathCandidate, ObjectStreamCandidate, ObjectStreamOwnershipCandidate,
     ObjectStreamOwnershipReferenceCandidate, StyleRef, TextBoundaryCandidate, TextControlBoundary,
     TextCountControlRangeOverlap, TextCountRange, TextCountRangeOverlap, TextLayoutExactEvidence,
@@ -120,6 +121,13 @@ pub fn to_json(document: &Document) -> String {
             output.push(',');
         }
         push_object_stream_candidate_json(&mut output, candidate);
+    }
+    output.push_str("],\"objectFrameRecords\":[");
+    for (index, record) in document.object_frame_records().iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        push_object_frame_record_candidate_json(&mut output, record);
     }
     output.push_str("],\"textCountRanges\":[");
     for (index, range) in document.text_count_ranges().iter().enumerate() {
@@ -246,6 +254,43 @@ fn push_unknown_object_json(output: &mut String, object: &UnknownObject) {
     output.push_str(",\"payloadHex\":");
     push_json_string(output, &hex(object.payload()));
     output.push('}');
+}
+
+fn push_object_frame_record_candidate_json(
+    output: &mut String,
+    record: &ObjectFrameRecordCandidate,
+) {
+    output.push_str("{\"sourcePath\":");
+    push_json_string(output, record.source_path());
+    output.push_str(",\"rowIndex\":");
+    output.push_str(&record.row_index().to_string());
+    output.push_str(",\"rowStart\":");
+    output.push_str(&record.row_start().to_string());
+    output.push_str(",\"recordLen\":");
+    output.push_str(&record.record_len().to_string());
+    output.push_str(",\"recordKind\":");
+    output.push_str(&record.record_kind().to_string());
+    output.push_str(",\"recordKindHex\":");
+    push_json_string(output, &format!("0x{:04x}", record.record_kind()));
+    output.push_str(",\"declaredRecordBytes\":");
+    output.push_str(&record.declared_record_bytes().to_string());
+    output.push_str(",\"objectId\":");
+    output.push_str(&record.object_id().to_string());
+    output.push_str(",\"objectType\":");
+    output.push_str(&record.object_type().to_string());
+    output.push_str(",\"objectTypeHex\":");
+    push_json_string(output, &format!("0x{:04x}", record.object_type()));
+    output.push_str(",\"geometry\":{\"x\":");
+    output.push_str(&record.x().to_string());
+    output.push_str(",\"y\":");
+    output.push_str(&record.y().to_string());
+    output.push_str(",\"width\":");
+    output.push_str(&record.width().to_string());
+    output.push_str(",\"height\":");
+    output.push_str(&record.height().to_string());
+    output.push_str("},\"rowPrefixHex\":");
+    push_json_string(output, &hex(record.row_prefix()));
+    output.push_str(",\"decoded\":false}");
 }
 
 fn push_object_stream_candidate_json(output: &mut String, candidate: &ObjectStreamCandidate) {
@@ -485,6 +530,8 @@ fn push_object_image_payload_span_json(output: &mut String, span: &ObjectImagePa
     output.push_str(&span.len().to_string());
     output.push_str(",\"complete\":");
     output.push_str(if span.complete() { "true" } else { "false" });
+    output.push_str(",\"dimensions\":");
+    push_object_image_dimensions_json(output, span.dimensions());
     output.push_str(",\"objectEnvelope\":");
     push_object_image_payload_envelope_json(output, span.envelope());
     output.push_str(",\"payloadPrefixHex\":");
@@ -493,6 +540,18 @@ fn push_object_image_payload_span_json(output: &mut String, span: &ObjectImagePa
         &hex(&span.payload()[..span.payload().len().min(16)]),
     );
     output.push_str(",\"decoded\":false}");
+}
+
+fn push_object_image_dimensions_json(output: &mut String, dimensions: Option<ObjectImageDimensions>) {
+    if let Some(dimensions) = dimensions {
+        output.push_str("{\"width\":");
+        output.push_str(&dimensions.width().to_string());
+        output.push_str(",\"height\":");
+        output.push_str(&dimensions.height().to_string());
+        output.push('}');
+    } else {
+        output.push_str("null");
+    }
 }
 
 fn push_object_image_payload_envelope_json(
@@ -1131,7 +1190,7 @@ mod tests {
 
         assert_eq!(
             to_json(&document),
-            "{\"metadata\":{\"title\":\"sample\"},\"blocks\":[{\"type\":\"paragraph\",\"style\":null,\"inlines\":[{\"type\":\"text\",\"text\":\"hello\\n\\\"\",\"style\":null}]}],\"unknownStyles\":[],\"unknownObjects\":[],\"objectStreamCandidates\":[],\"textCountRanges\":[],\"textControlBoundaries\":[],\"textBoundaryCandidates\":[],\"textParagraphBoundaryCandidates\":[],\"rawStreams\":[]}"
+            "{\"metadata\":{\"title\":\"sample\"},\"blocks\":[{\"type\":\"paragraph\",\"style\":null,\"inlines\":[{\"type\":\"text\",\"text\":\"hello\\n\\\"\",\"style\":null}]}],\"unknownStyles\":[],\"unknownObjects\":[],\"objectStreamCandidates\":[],\"objectFrameRecords\":[],\"textCountRanges\":[],\"textControlBoundaries\":[],\"textBoundaryCandidates\":[],\"textParagraphBoundaryCandidates\":[],\"rawStreams\":[]}"
         );
     }
 

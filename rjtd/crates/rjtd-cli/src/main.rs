@@ -24,9 +24,10 @@ use rjtd_core::style_stream::{
 use rjtd_export::to_pdf;
 use rjtd_export::{to_json, to_markdown, to_plain_text};
 use rjtd_model::{
-    ObjectFdmIndexBbox, ObjectFdmIndexEntryCandidate, ObjectFrameReferenceRowCandidate,
-    ObjectImageSignatureHit, ObjectStreamCandidate as ModelObjectStreamCandidate,
-    TextBoundaryCandidate, TextCountRange, TextLayoutExactEvidence, parse_document,
+    ObjectFdmIndexBbox, ObjectFdmIndexEntryCandidate, ObjectFrameRecordCandidate,
+    ObjectFrameReferenceRowCandidate, ObjectImagePayloadSpan, ObjectImageSignatureHit,
+    ObjectStreamCandidate as ModelObjectStreamCandidate, TextBoundaryCandidate, TextCountRange,
+    TextLayoutExactEvidence, parse_document,
 };
 
 const BROKEN_PIPE_EXIT: &str = "__rjtd_broken_pipe__";
@@ -1171,6 +1172,92 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
                 image_hit_count,
                 complete_payload_count,
                 plausible_bbox_count,
+                renderable_count
+            ))?;
+            Ok(())
+        }
+        Some("object-fdm-frame-links") => {
+            let path = required_path(args.next(), "object-fdm-frame-links")?;
+            let bytes = read_file(path)?;
+            let document = parse_document(&bytes).map_err(|error| error.to_string())?;
+            let mut source_count = 0usize;
+            let mut candidate_count = 0usize;
+            let mut frame_linked_count = 0usize;
+            let mut missing_frame_count = 0usize;
+            let mut complete_payload_count = 0usize;
+            let renderable_count = 0usize;
+
+            for candidate in document.object_stream_candidates() {
+                let image_entries = candidate
+                    .fdm_index_entry_candidates()
+                    .iter()
+                    .filter(|entry| !entry.segment_image_signature_hits().is_empty())
+                    .collect::<Vec<_>>();
+                if image_entries.is_empty() {
+                    continue;
+                }
+
+                source_count += 1;
+                for entry in image_entries {
+                    let complete_payload_spans = fdm_entry_complete_payload_spans(candidate, entry);
+                    let complete_payloads = complete_payload_spans.len();
+                    let frame_record = fdm_frame_record_for_entry(
+                        document.object_frame_records(),
+                        entry.row_index(),
+                    );
+                    candidate_count += 1;
+                    complete_payload_count += complete_payloads;
+                    if frame_record.is_some() {
+                        frame_linked_count += 1;
+                    } else {
+                        missing_frame_count += 1;
+                    }
+
+                    write_stdout_line(&format!(
+                        "object-fdm-frame-link\tsource={}\tindex={}\trow={}\timage-hits={}\tcomplete-payloads={}\tframe-linked={}\tframe-source={}\tframe-row={}\tframe-start={}\tframe-object-id={}\tframe-kind={}\tframe-type={}\tframe-geometry={}\tframe-size={}\tpayload-dimensions={}\tdimensioned-payloads={}\tbest-aspect-delta-permille={}\tlink-basis=fdm-row-index-to-frame-object-id\trenderable=false\treason=page-placement-unproven\tdecoded=false",
+                        escaped_path(candidate.path()),
+                        escaped_path(entry.index_path()),
+                        entry.row_index(),
+                        entry.segment_image_signature_hits().len(),
+                        complete_payloads,
+                        frame_record.is_some(),
+                        format_optional_text(
+                            frame_record.map(ObjectFrameRecordCandidate::source_path)
+                        ),
+                        format_optional_usize(
+                            frame_record.map(ObjectFrameRecordCandidate::row_index)
+                        ),
+                        format_optional_usize(
+                            frame_record.map(ObjectFrameRecordCandidate::row_start)
+                        ),
+                        format_optional_u16_decimal(
+                            frame_record.map(ObjectFrameRecordCandidate::object_id)
+                        ),
+                        format_optional_u16_hex(
+                            frame_record.map(ObjectFrameRecordCandidate::record_kind)
+                        ),
+                        format_optional_u16_hex(
+                            frame_record.map(ObjectFrameRecordCandidate::object_type)
+                        ),
+                        format_optional_frame_geometry(frame_record),
+                        format_optional_frame_size(frame_record),
+                        format_fdm_payload_dimensions(&complete_payload_spans),
+                        fdm_payload_dimension_count(&complete_payload_spans),
+                        format_optional_u64(best_frame_payload_aspect_delta_permille(
+                            frame_record,
+                            &complete_payload_spans
+                        ))
+                    ))?;
+                }
+            }
+
+            write_stdout_line(&format!(
+                "summary\tsources={}\tcandidates={}\tframe-linked={}\tmissing-frame={}\tcomplete-payloads={}\trenderable={}\tdecoded=false",
+                source_count,
+                candidate_count,
+                frame_linked_count,
+                missing_frame_count,
+                complete_payload_count,
                 renderable_count
             ))?;
             Ok(())
@@ -4063,6 +4150,7 @@ Usage:
   rjtd object-frame-row-links <file.jtd>
   rjtd object-image-frame-candidates <file.jtd>
   rjtd object-fdm-image-candidates <file.jtd>
+  rjtd object-fdm-frame-links <file.jtd>
   rjtd object-fdm-index <file.jtd>
   rjtd object-fdm-index-shape <file.jtd>
   rjtd object-fdm-index-rows <file.jtd>
@@ -5196,6 +5284,16 @@ fn fdm_entry_complete_payload_count(
         .count()
 }
 
+fn fdm_frame_record_for_entry(
+    records: &[ObjectFrameRecordCandidate],
+    row_index: usize,
+) -> Option<&ObjectFrameRecordCandidate> {
+    let object_id = u16::try_from(row_index).ok()?;
+    records
+        .iter()
+        .find(|record| record.object_id() == object_id)
+}
+
 fn normalize_fdm_bbox(bbox: ObjectFdmIndexBbox) -> (i32, i32, i32, i32) {
     (
         bbox.left().min(bbox.right()),
@@ -5231,6 +5329,20 @@ fn format_model_object_signature_hits(hits: &[ObjectImageSignatureHit]) -> Strin
     } else {
         hits.join(",")
     }
+}
+
+fn format_optional_frame_geometry(record: Option<&ObjectFrameRecordCandidate>) -> String {
+    record
+        .map(|record| {
+            format!(
+                "{},{},{},{}",
+                record.x(),
+                record.y(),
+                record.width(),
+                record.height()
+            )
+        })
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn object_frame_coordinate_pair(

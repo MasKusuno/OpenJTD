@@ -160,10 +160,14 @@ Parser/export/app-core JSON は、declared-count prefix rows を対応する `FD
 
 App-core `getPageOverlayImages` は同じ FDM rows を `unplacedDiagnostics` として expose し、`behind`、`front`、`imageCount` は empty/zero のまま維持する。各 diagnostic は `placementProven:false`、`renderable:false`、`decoded:false`、reason `page-placement-unproven` を持つ。これにより rhwp-shaped overlay API は callable だが、decoded page placement や paint resources を claim しない。
 
+Parser/export/app-core JSON は `/Frame` fixed 60-byte records も decoded-false `objectFrameRecords` として保存する。観測された record layout は 16-byte header、offset 14 の big-endian declared count、60-byte rows を持つ。Rows は object id、record kind/type、geometry-looking fields を expose するが、units、page association、paint order が証明されるまでは diagnostic のまま扱う。
+
+`rjtd object-fdm-frame-links <file>` は image-bearing FDMIndex rows とこれらの `/Frame` records を `fdm row index == frame object id` で相関させる。61-sample sweep は 0 failures で、positive files 3、FDM image rows 6、frame-linked rows 6、missing-frame rows 0、complete payloads 11、renderable rows 0 を見つける。これは現在観測される FDM image rows が frame-record trail を持つことを示すが、どの image payload を page 上のどこに paint すべきかはまだ証明しない。
+
 ## Next Work
 
 - image payload signatures 前の semantic object header fields を decode し、`/Figure`、`/Frame`、`/LayoutBox`、layout mark evidence と接続する。
-- coordinate-like FDMIndex diagnostic rows を decode し、FDMVector images を render する前に image-bearing FDMVector rows を page/frame/layout records と相関させる。
+- `/Frame` geometry units、page association、paint order、payload-to-image selection、remaining coordinate-like FDMIndex diagnostic rows を decode してから FDMVector images を render する。
 - ownership references を page geometry に promote する前に、どの `Embedding N` reference encoding と record-local offset が semantically authoritative かを証明する。
 - object ownership と page geometry が証明された後にのみ、preserved image payload bytes を model-level image resources に接続する。
 - non-text PDF rendering の前に decoded object/layout records から real page/layer paint operations を構築する。
