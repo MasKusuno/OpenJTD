@@ -304,7 +304,7 @@ impl DocumentParser for IchitaroParser {
             for candidate in text_boundary_candidates_from_ranges(document.text_count_ranges()) {
                 document.push_text_boundary_candidate(candidate);
             }
-            for candidate in table_candidates_from_text_boundaries(&document) {
+            for candidate in table_candidates_from_text_boundaries(&document, map.entries()) {
                 document.push_table_candidate(candidate);
             }
             for candidate in
@@ -482,6 +482,21 @@ impl DocumentCore {
 
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    fn observed_table_candidate(&self, control_idx: u32) -> Option<&TableCandidate> {
+        let candidate = self.document.table_candidates().get(control_idx as usize)?;
+        candidate.is_row_like().then_some(candidate)
+    }
+
+    fn observed_table_cell(
+        &self,
+        control_idx: u32,
+        cell_idx: u32,
+    ) -> Option<&TableCandidateInterval> {
+        self.observed_table_candidate(control_idx)?
+            .intervals()
+            .get(cell_idx as usize)
     }
 
     pub fn page_count(&self) -> u32 {
@@ -1062,11 +1077,14 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
-        _cell_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
     ) -> Result<u32> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(0)
+        Ok(self
+            .observed_table_cell(control_idx, cell_idx)
+            .map(|_| 1)
+            .unwrap_or(0))
     }
 
     pub fn get_cell_paragraph_count_native(
@@ -1083,12 +1101,18 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
-        _cell_idx: u32,
-        _cell_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        cell_para_idx: u32,
     ) -> Result<u32> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(0)
+        if cell_para_idx != 0 {
+            return Ok(0);
+        }
+        Ok(self
+            .observed_table_cell(control_idx, cell_idx)
+            .map(|cell| cell.text_preview().chars().count() as u32)
+            .unwrap_or(0))
     }
 
     pub fn get_cell_paragraph_length_native(
@@ -1172,14 +1196,20 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
-        _cell_idx: u32,
-        _cell_para_idx: u32,
-        _char_offset: u32,
-        _count: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        cell_para_idx: u32,
+        char_offset: u32,
+        count: u32,
     ) -> Result<String> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(String::new())
+        if cell_para_idx != 0 {
+            return Ok(String::new());
+        }
+        Ok(self
+            .observed_table_cell(control_idx, cell_idx)
+            .map(|cell| char_slice(cell.text_preview(), char_offset, count))
+            .unwrap_or_default())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1287,13 +1317,19 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
-        _cell_idx: u32,
-        _cell_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        cell_para_idx: u32,
         _char_offset: u32,
     ) -> Result<String> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(default_line_info_json())
+        if cell_para_idx != 0 {
+            return Ok(default_line_info_json());
+        }
+        Ok(self
+            .observed_table_cell(control_idx, cell_idx)
+            .map(observed_cell_line_info_json)
+            .unwrap_or_else(default_line_info_json))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1320,10 +1356,13 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
+        control_idx: u32,
     ) -> Result<String> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(default_table_dimensions_json())
+        Ok(self
+            .observed_table_candidate(control_idx)
+            .map(observed_table_dimensions_json)
+            .unwrap_or_else(default_table_dimensions_json))
     }
 
     pub fn get_table_dimensions_native(
@@ -1358,11 +1397,14 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
-        _cell_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
     ) -> Result<String> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(default_cell_info_json())
+        Ok(self
+            .observed_table_cell(control_idx, cell_idx)
+            .map(|cell| observed_cell_info_json(cell_idx, cell))
+            .unwrap_or_else(default_cell_info_json))
     }
 
     pub fn get_cell_info_native(
@@ -2311,10 +2353,13 @@ impl DocumentCore {
         &self,
         section_idx: u32,
         parent_para_idx: u32,
-        _control_idx: u32,
+        control_idx: u32,
     ) -> Result<String> {
         self.ensure_parent_paragraph(section_idx, parent_para_idx)?;
-        Ok(String::new())
+        Ok(self
+            .observed_table_candidate(control_idx)
+            .map(observed_table_signature)
+            .unwrap_or_default())
     }
 
     pub fn get_table_signature_native(
@@ -6735,8 +6780,149 @@ impl TableCandidate {
         &self.intervals
     }
 
+    pub fn is_row_like(&self) -> bool {
+        let mut non_empty = 0usize;
+        for interval in &self.intervals {
+            if interval.line_break_count() != 0 {
+                return false;
+            }
+            if interval.text_char_count() == 0 {
+                return false;
+            }
+            non_empty += 1;
+        }
+        non_empty > 1
+    }
+
+    pub fn is_cell_like(&self) -> bool {
+        self.is_row_like()
+    }
+
+    pub fn column_split_candidate_row_count(&self) -> usize {
+        self.intervals
+            .iter()
+            .filter(|interval| !interval.column_segments().is_empty())
+            .count()
+    }
+
+    pub fn max_column_segment_count(&self) -> usize {
+        self.intervals
+            .iter()
+            .map(|interval| interval.column_segments().len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn column_segment_pattern_consistent(&self) -> bool {
+        self.column_split_candidate_row_count() > 0
+            && self.column_segment_pattern_mismatch_rows() == 0
+    }
+
+    pub fn column_segment_pattern_mismatch_rows(&self) -> usize {
+        let mut split_rows = 0usize;
+        let mut signature_counts: BTreeMap<Vec<TableCandidateColumnSegmentKind>, usize> =
+            BTreeMap::new();
+
+        for interval in &self.intervals {
+            if interval.column_segments().is_empty() {
+                continue;
+            }
+            split_rows += 1;
+            let signature = interval
+                .column_segments()
+                .iter()
+                .map(|segment| segment.kind())
+                .collect::<Vec<_>>();
+            *signature_counts.entry(signature).or_insert(0) += 1;
+        }
+
+        if split_rows == 0 {
+            return 0;
+        }
+
+        let dominant_rows = signature_counts.values().copied().max().unwrap_or(0);
+        split_rows.saturating_sub(dominant_rows)
+    }
+
+    pub fn column_segment_grid_candidate(&self) -> Option<TableCandidateColumnGridCandidate> {
+        if !self.is_row_like() || !self.column_segment_pattern_consistent() {
+            return None;
+        }
+
+        let split_rows = self.column_split_candidate_row_count();
+        if split_rows == 0 || split_rows != self.intervals.len() {
+            return None;
+        }
+
+        let pattern = self.intervals.iter().find_map(|interval| {
+            (!interval.column_segments().is_empty()).then(|| {
+                interval
+                    .column_segments()
+                    .iter()
+                    .map(|segment| segment.kind())
+                    .collect::<Vec<_>>()
+            })
+        })?;
+
+        if pattern.len() < 2 {
+            return None;
+        }
+
+        Some(TableCandidateColumnGridCandidate::new(
+            self.intervals.len(),
+            pattern,
+            split_rows,
+        ))
+    }
+
     pub fn rule(&self) -> &'static str {
         "control-delimited-text-count-range-with-multiple-intervals"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableCandidateColumnGridCandidate {
+    row_count: usize,
+    column_count: usize,
+    cell_count: usize,
+    split_row_count: usize,
+    pattern: Vec<TableCandidateColumnSegmentKind>,
+}
+
+impl TableCandidateColumnGridCandidate {
+    fn new(
+        row_count: usize,
+        pattern: Vec<TableCandidateColumnSegmentKind>,
+        split_row_count: usize,
+    ) -> Self {
+        let column_count = pattern.len();
+        Self {
+            row_count,
+            column_count,
+            cell_count: row_count.saturating_mul(column_count),
+            split_row_count,
+            pattern,
+        }
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.column_count
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.cell_count
+    }
+
+    pub fn split_row_count(&self) -> usize {
+        self.split_row_count
+    }
+
+    pub fn pattern(&self) -> &[TableCandidateColumnSegmentKind] {
+        &self.pattern
     }
 }
 
@@ -6747,7 +6933,9 @@ pub struct TableCandidateInterval {
     source_start: usize,
     source_end: usize,
     text_preview: String,
+    text_char_count: usize,
     line_break_count: usize,
+    column_segments: Vec<TableCandidateColumnSegment>,
 }
 
 impl TableCandidateInterval {
@@ -6756,16 +6944,21 @@ impl TableCandidateInterval {
         source_interval_index: usize,
         source_start: usize,
         source_end: usize,
-        text_preview: String,
-        line_break_count: usize,
+        text: String,
     ) -> Self {
+        let text_char_count = text.chars().count();
+        let line_break_count = text_line_break_count(&text);
+        let text_preview = preview_text(&text, 80);
+        let column_segments = table_row_column_segments(&text);
         Self {
             index,
             source_interval_index,
             source_start,
             source_end,
             text_preview,
+            text_char_count,
             line_break_count,
+            column_segments,
         }
     }
 
@@ -6789,8 +6982,78 @@ impl TableCandidateInterval {
         &self.text_preview
     }
 
+    pub fn text_char_count(&self) -> usize {
+        self.text_char_count
+    }
+
     pub fn line_break_count(&self) -> usize {
         self.line_break_count
+    }
+
+    pub fn column_segments(&self) -> &[TableCandidateColumnSegment] {
+        &self.column_segments
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableCandidateColumnSegment {
+    index: usize,
+    kind: TableCandidateColumnSegmentKind,
+    char_start: usize,
+    char_end: usize,
+    text: String,
+}
+
+impl TableCandidateColumnSegment {
+    fn new(
+        index: usize,
+        kind: TableCandidateColumnSegmentKind,
+        char_start: usize,
+        char_end: usize,
+        text: String,
+    ) -> Self {
+        Self {
+            index,
+            kind,
+            char_start,
+            char_end,
+            text,
+        }
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn kind(&self) -> TableCandidateColumnSegmentKind {
+        self.kind
+    }
+
+    pub fn char_start(&self) -> usize {
+        self.char_start
+    }
+
+    pub fn char_end(&self) -> usize {
+        self.char_end
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TableCandidateColumnSegmentKind {
+    Label,
+    Value,
+}
+
+impl TableCandidateColumnSegmentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Label => "label",
+            Self::Value => "value",
+        }
     }
 }
 
@@ -8732,7 +8995,10 @@ fn text_boundary_candidates_from_ranges(ranges: &[TextCountRange]) -> Vec<TextBo
     candidates
 }
 
-fn table_candidates_from_text_boundaries(document: &Document) -> Vec<TableCandidate> {
+fn table_candidates_from_text_boundaries(
+    document: &Document,
+    entries: &[DocumentTextMapEntry],
+) -> Vec<TableCandidate> {
     let Some(bounds) = document_text_source_bounds(document) else {
         return Vec::new();
     };
@@ -8742,7 +9008,7 @@ fn table_candidates_from_text_boundaries(document: &Document) -> Vec<TableCandid
         if candidate.interval_count() <= 1 {
             continue;
         }
-        let intervals = table_candidate_intervals(document, &bounds, candidate);
+        let intervals = table_candidate_intervals(document, entries, &bounds, candidate);
         if intervals.len() <= 1 {
             continue;
         }
@@ -8757,6 +9023,7 @@ fn table_candidates_from_text_boundaries(document: &Document) -> Vec<TableCandid
 
 fn table_candidate_intervals(
     document: &Document,
+    entries: &[DocumentTextMapEntry],
     bounds: &TextSourceSpan,
     candidate: &TextBoundaryCandidate,
 ) -> Vec<TableCandidateInterval> {
@@ -8774,16 +9041,14 @@ fn table_candidate_intervals(
             if source_start >= source_end {
                 return None;
             }
-            let text = text_for_source_range(document, candidate.basis(), source_start, source_end);
-            let text_preview = preview_text(&text, 80);
-            let line_break_count = text_line_break_count(&text);
+            let text =
+                range_visible_text_for_basis(entries, source_start, source_end, candidate.basis());
             Some(TableCandidateInterval::new(
                 0,
                 interval.index,
                 source_start,
                 source_end,
-                text_preview,
-                line_break_count,
+                text,
             ))
         })
         .enumerate()
@@ -9008,6 +9273,75 @@ fn range_visible_text(entries: &[DocumentTextMapEntry], start: usize, end: usize
         .filter(|entry| range_overlaps_entry(entry, start, end))
         .map(|entry| range_text_overlap(entry, start, end))
         .collect()
+}
+
+fn range_visible_text_for_basis(
+    entries: &[DocumentTextMapEntry],
+    start: usize,
+    end: usize,
+    basis: TextCountRangeOverlapBasis,
+) -> String {
+    entries
+        .iter()
+        .filter(|entry| range_overlaps_entry_for_basis(entry, start, end, basis))
+        .map(|entry| range_text_overlap_for_basis(entry, start, end, basis))
+        .collect()
+}
+
+fn range_overlaps_entry_for_basis(
+    entry: &DocumentTextMapEntry,
+    start: usize,
+    end: usize,
+    basis: TextCountRangeOverlapBasis,
+) -> bool {
+    if start >= end {
+        return false;
+    }
+    let (entry_start, entry_end) = entry_range_for_basis(entry, basis);
+    entry_start < end && entry_end > start
+}
+
+fn range_text_overlap_for_basis(
+    entry: &DocumentTextMapEntry,
+    start: usize,
+    end: usize,
+    basis: TextCountRangeOverlapBasis,
+) -> String {
+    if entry.kind() == DocumentTextMapKind::ControlBoundary || start >= end {
+        return String::new();
+    }
+
+    let (entry_start, entry_end) = entry_range_for_basis(entry, basis);
+    let overlap_start = entry_start.max(start);
+    let overlap_end = entry_end.min(end);
+    if overlap_start >= overlap_end {
+        return String::new();
+    }
+
+    let (relative_start, relative_end) = match basis {
+        TextCountRangeOverlapBasis::Byte => (
+            overlap_start.saturating_sub(entry.byte_start()) / 2,
+            overlap_end
+                .saturating_sub(entry.byte_start())
+                .saturating_add(1)
+                / 2,
+        ),
+        TextCountRangeOverlapBasis::Unit => (
+            overlap_start.saturating_sub(entry.unit_start()),
+            overlap_end.saturating_sub(entry.unit_start()),
+        ),
+    };
+    text_by_utf16_units(entry.text(), relative_start, relative_end)
+}
+
+fn entry_range_for_basis(
+    entry: &DocumentTextMapEntry,
+    basis: TextCountRangeOverlapBasis,
+) -> (usize, usize) {
+    match basis {
+        TextCountRangeOverlapBasis::Byte => (entry.byte_start(), entry.byte_end()),
+        TextCountRangeOverlapBasis::Unit => (entry.unit_start(), entry.unit_end()),
+    }
 }
 
 fn range_overlaps_entry(entry: &DocumentTextMapEntry, start: usize, end: usize) -> bool {
@@ -9237,42 +9571,6 @@ fn text_preview_for_source_overlap(
     )
 }
 
-fn text_for_source_range(
-    document: &Document,
-    basis: TextCountRangeOverlapBasis,
-    source_start: usize,
-    source_end: usize,
-) -> String {
-    let mut text = String::new();
-    for block in document.blocks() {
-        let Block::Paragraph(paragraph) = block else {
-            continue;
-        };
-        for inline in paragraph.inlines() {
-            let Inline::Text(run) = inline else {
-                continue;
-            };
-            let Some(span) = run.source_span() else {
-                continue;
-            };
-            let (entry_start, entry_end) = source_span_range(span, basis);
-            let overlap_start = entry_start.max(source_start);
-            let overlap_end = entry_end.min(source_end);
-            if overlap_start >= overlap_end {
-                continue;
-            }
-            text.push_str(&text_for_source_overlap(
-                run.text(),
-                span,
-                basis,
-                overlap_start,
-                overlap_end,
-            ));
-        }
-    }
-    text
-}
-
 fn text_for_source_overlap(
     text: &str,
     span: &TextSourceSpan,
@@ -9307,6 +9605,148 @@ fn text_by_utf16_units(text: &str, start: usize, end: usize) -> String {
         current = next;
     }
     output
+}
+
+fn table_row_column_segments(text: &str) -> Vec<TableCandidateColumnSegment> {
+    let chars = text.chars().collect::<Vec<_>>();
+    let value_spans = finance_value_spans(&chars);
+    if value_spans.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut segments = Vec::new();
+    if let Some((start, end)) = trim_char_span(&chars, 0, value_spans[0].0) {
+        segments.push(TableCandidateColumnSegment::new(
+            segments.len(),
+            TableCandidateColumnSegmentKind::Label,
+            start,
+            end,
+            chars[start..end].iter().collect(),
+        ));
+    }
+
+    for (start, end) in value_spans {
+        if let Some((start, end)) = trim_char_span(&chars, start, end) {
+            segments.push(TableCandidateColumnSegment::new(
+                segments.len(),
+                TableCandidateColumnSegmentKind::Value,
+                start,
+                end,
+                chars[start..end].iter().collect(),
+            ));
+        }
+    }
+
+    segments
+}
+
+fn finance_value_spans(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if chars[index] == '△' {
+            let mut value_start = index + 1;
+            while value_start < chars.len() && chars[value_start].is_whitespace() {
+                value_start += 1;
+            }
+            if let Some(end) = parse_finance_value_end(chars, value_start) {
+                spans.push((index, end));
+                index = end;
+                continue;
+            }
+        }
+
+        if chars[index] == '－' {
+            spans.push((index, index + 1));
+            index += 1;
+            continue;
+        }
+
+        if let Some(end) = parse_finance_value_end(chars, index) {
+            spans.push((index, end));
+            index = end;
+            continue;
+        }
+
+        index += 1;
+    }
+    spans
+}
+
+fn parse_finance_value_end(chars: &[char], start: usize) -> Option<usize> {
+    parse_decimal_value_end(chars, start).or_else(|| parse_comma_number_end(chars, start))
+}
+
+fn parse_decimal_value_end(chars: &[char], start: usize) -> Option<usize> {
+    if !chars
+        .get(start)
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut index = start;
+    while index < chars.len() && chars[index].is_ascii_digit() {
+        index += 1;
+    }
+    if chars.get(index) != Some(&'.') {
+        return None;
+    }
+    let decimal_start = index + 1;
+    if !chars
+        .get(decimal_start)
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((decimal_start + 1).min(chars.len()))
+}
+
+fn parse_comma_number_end(chars: &[char], start: usize) -> Option<usize> {
+    if !chars
+        .get(start)
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let mut index = start;
+    let mut leading_digits = 0usize;
+    while index < chars.len() && chars[index].is_ascii_digit() && leading_digits < 3 {
+        index += 1;
+        leading_digits += 1;
+    }
+    if leading_digits == 0 || chars.get(index) != Some(&',') {
+        return None;
+    }
+
+    let mut group_count = 0usize;
+    while chars.get(index) == Some(&',') {
+        let group_start = index + 1;
+        let group_end = group_start + 3;
+        if group_end > chars.len()
+            || !chars[group_start..group_end]
+                .iter()
+                .all(|character| character.is_ascii_digit())
+        {
+            break;
+        }
+        index = group_end;
+        group_count += 1;
+    }
+
+    (group_count > 0).then_some(index)
+}
+
+fn trim_char_span(chars: &[char], start: usize, end: usize) -> Option<(usize, usize)> {
+    let mut start = start.min(chars.len());
+    let mut end = end.min(chars.len());
+    while start < end && chars[start].is_whitespace() {
+        start += 1;
+    }
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    (start < end).then_some((start, end))
 }
 
 fn preview_text(text: &str, max_chars: usize) -> String {
@@ -10119,8 +10559,88 @@ fn default_table_dimensions_json() -> String {
     "{\"rowCount\":0,\"colCount\":0,\"cellCount\":0}".to_string()
 }
 
+fn observed_table_dimensions_json(candidate: &TableCandidate) -> String {
+    let row_count = candidate.intervals().len();
+    let mut output = format!(
+        "{{\"rowCount\":{row_count},\"colCount\":1,\"cellCount\":{row_count},\"source\":\"tableCandidate\",\"tableCandidateIndex\":{},\"basis\":\"{}\",\"delimiterCode\":{},\"delimiterCodeHex\":\"0x{:04x}\",\"columnSplitCandidateRows\":{},\"maxColumnSegmentCount\":{},\"columnSegmentPatternConsistent\":{},\"columnSegmentPatternMismatchRows\":{}",
+        candidate.index(),
+        candidate.basis().as_str(),
+        candidate.delimiter_code(),
+        candidate.delimiter_code(),
+        candidate.column_split_candidate_row_count(),
+        candidate.max_column_segment_count(),
+        if candidate.column_segment_pattern_consistent() {
+            "true"
+        } else {
+            "false"
+        },
+        candidate.column_segment_pattern_mismatch_rows()
+    );
+    output.push_str(",\"columnGridCandidate\":");
+    if let Some(grid) = candidate.column_segment_grid_candidate() {
+        output.push_str(&column_grid_candidate_json(candidate, &grid));
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"columnSplittingDecoded\":false,\"decoded\":false}");
+    output
+}
+
+fn column_grid_candidate_json(
+    candidate: &TableCandidate,
+    grid: &TableCandidateColumnGridCandidate,
+) -> String {
+    let pattern = grid
+        .pattern()
+        .iter()
+        .map(|kind| json_string(kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"source\":\"columnSegments\",\"tableCandidateIndex\":{},\"rowCount\":{},\"colCountCandidate\":{},\"cellCountCandidate\":{},\"columnSplitCandidateRows\":{},\"maxColumnSegmentCount\":{},\"columnSegmentPatternConsistent\":true,\"columnSegmentPatternMismatchRows\":0,\"pattern\":[{}],\"geometryDecoded\":false,\"decoded\":false}}",
+        candidate.index(),
+        grid.row_count(),
+        grid.column_count(),
+        grid.cell_count(),
+        grid.split_row_count(),
+        candidate.max_column_segment_count(),
+        pattern
+    )
+}
+
 fn default_cell_info_json() -> String {
     "{\"row\":0,\"col\":0,\"rowSpan\":1,\"colSpan\":1}".to_string()
+}
+
+fn observed_cell_info_json(cell_idx: u32, cell: &TableCandidateInterval) -> String {
+    format!(
+        "{{\"row\":{cell_idx},\"col\":0,\"rowSpan\":1,\"colSpan\":1,\"source\":\"tableCandidateInterval\",\"sourceIntervalIndex\":{},\"sourceStart\":{},\"sourceEnd\":{},\"decoded\":false}}",
+        cell.source_interval_index(),
+        cell.source_start(),
+        cell.source_end()
+    )
+}
+
+fn observed_cell_line_info_json(cell: &TableCandidateInterval) -> String {
+    let char_end = cell.text_preview().chars().count();
+    format!("{{\"lineIndex\":0,\"lineCount\":1,\"charStart\":0,\"charEnd\":{char_end}}}")
+}
+
+fn observed_table_signature(candidate: &TableCandidate) -> String {
+    format!(
+        "rjtd-table-candidate:{}:{}:0x{:04x}:{}x1",
+        candidate.index(),
+        candidate.basis().as_str(),
+        candidate.delimiter_code(),
+        candidate.intervals().len()
+    )
+}
+
+fn char_slice(text: &str, char_offset: u32, count: u32) -> String {
+    text.chars()
+        .skip(char_offset as usize)
+        .take(count as usize)
+        .collect()
 }
 
 fn default_table_edit_result_json() -> String {
@@ -10786,13 +11306,35 @@ fn push_table_candidate_json(output: &mut String, candidate: &TableCandidate) {
     output.push_str(",\"sourceEnd\":");
     output.push_str(&candidate.source_end().to_string());
     output.push_str(",\"intervals\":");
-    push_table_candidate_intervals_json(output, candidate.intervals());
+    push_table_candidate_intervals_json(output, candidate.intervals(), candidate.is_row_like());
+    output.push_str(",\"cellLike\":");
+    output.push_str(if candidate.is_cell_like() {
+        "true"
+    } else {
+        "false"
+    });
+    output.push_str(",\"rowLike\":");
+    output.push_str(if candidate.is_row_like() {
+        "true"
+    } else {
+        "false"
+    });
+    output.push_str(",\"observedTable\":");
+    if candidate.is_row_like() {
+        output.push_str(&observed_table_dimensions_json(candidate));
+    } else {
+        output.push_str("null");
+    }
     output.push_str(",\"rule\":");
     output.push_str(&json_string(candidate.rule()));
     output.push_str(",\"decoded\":false}");
 }
 
-fn push_table_candidate_intervals_json(output: &mut String, intervals: &[TableCandidateInterval]) {
+fn push_table_candidate_intervals_json(
+    output: &mut String,
+    intervals: &[TableCandidateInterval],
+    emit_column_segments: bool,
+) {
     output.push('[');
     for (index, interval) in intervals.iter().enumerate() {
         if index > 0 {
@@ -10808,8 +11350,42 @@ fn push_table_candidate_intervals_json(output: &mut String, intervals: &[TableCa
         output.push_str(&interval.source_end().to_string());
         output.push_str(",\"textPreview\":");
         output.push_str(&json_string(interval.text_preview()));
+        output.push_str(",\"textCharCount\":");
+        output.push_str(&interval.text_char_count().to_string());
         output.push_str(",\"lineBreakCount\":");
         output.push_str(&interval.line_break_count().to_string());
+        output.push_str(",\"columnSegments\":");
+        if emit_column_segments {
+            push_table_candidate_column_segments_json(output, interval.column_segments());
+        } else {
+            output.push_str("[]");
+        }
+        output.push_str(",\"decoded\":false}");
+    }
+    output.push(']');
+}
+
+fn push_table_candidate_column_segments_json(
+    output: &mut String,
+    segments: &[TableCandidateColumnSegment],
+) {
+    output.push('[');
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str("{\"index\":");
+        output.push_str(&segment.index().to_string());
+        output.push_str(",\"kind\":");
+        output.push_str(&json_string(segment.kind().as_str()));
+        output.push_str(",\"charStart\":");
+        output.push_str(&segment.char_start().to_string());
+        output.push_str(",\"charEnd\":");
+        output.push_str(&segment.char_end().to_string());
+        output.push_str(",\"text\":");
+        output.push_str(&json_string(segment.text()));
+        output.push_str(",\"charCount\":");
+        output.push_str(&segment.text().chars().count().to_string());
         output.push_str(",\"decoded\":false}");
     }
     output.push(']');
@@ -12421,6 +12997,15 @@ mod tests {
         assert!(info.contains("\"textPreview\":\"銀河\""));
         assert!(info.contains("\"textPreview\":\"鉄道\""));
         assert!(info.contains("\"lineBreakCount\":0"));
+        assert!(info.contains("\"columnSegments\":[]"));
+        assert!(info.contains("\"cellLike\":true"));
+        assert!(info.contains("\"rowLike\":true"));
+        assert!(info.contains("\"observedTable\":{\"rowCount\":2,\"colCount\":1,\"cellCount\":2"));
+        assert!(info.contains("\"columnSplitCandidateRows\":0"));
+        assert!(info.contains("\"maxColumnSegmentCount\":0"));
+        assert!(info.contains("\"columnSegmentPatternConsistent\":false"));
+        assert!(info.contains("\"columnSegmentPatternMismatchRows\":0"));
+        assert!(info.contains("\"columnGridCandidate\":null"));
         assert!(
             info.contains(
                 "\"rule\":\"control-delimited-text-count-range-with-multiple-intervals\""
@@ -12428,12 +13013,177 @@ mod tests {
         );
         assert_eq!(
             core.get_table_dimensions(0, 0, 0).unwrap(),
-            "{\"rowCount\":0,\"colCount\":0,\"cellCount\":0}"
+            "{\"rowCount\":2,\"colCount\":1,\"cellCount\":2,\"source\":\"tableCandidate\",\"tableCandidateIndex\":0,\"basis\":\"byte\",\"delimiterCode\":28,\"delimiterCodeHex\":\"0x001c\",\"columnSplitCandidateRows\":0,\"maxColumnSegmentCount\":0,\"columnSegmentPatternConsistent\":false,\"columnSegmentPatternMismatchRows\":0,\"columnGridCandidate\":null,\"columnSplittingDecoded\":false,\"decoded\":false}"
         );
 
         let warnings = core.get_validation_warnings();
         assert!(warnings.contains("\"JTD table candidate preserved as diagnostic data\":2"));
         assert!(warnings.contains("\"kind\":\"JtdTableCandidateDiagnosticOnly\""));
+    }
+
+    #[test]
+    fn document_core_exposes_row_like_table_candidate_read_api() {
+        let position_table = text_count_table_fixture_with_ranges(&[(0, 30)]);
+        let bytes = cfb_with_streams(&[
+            ("/DocumentText", &document_text_with_control_boundary()),
+            (
+                rjtd_core::document_text_position::DOCUMENT_TEXT_POSITION_TABLES_PATH,
+                &position_table,
+            ),
+        ]);
+        let core = DocumentCore::from_bytes(&bytes).unwrap();
+
+        assert_eq!(
+            core.get_table_dimensions(0, 0, 0).unwrap(),
+            "{\"rowCount\":2,\"colCount\":1,\"cellCount\":2,\"source\":\"tableCandidate\",\"tableCandidateIndex\":0,\"basis\":\"byte\",\"delimiterCode\":28,\"delimiterCodeHex\":\"0x001c\",\"columnSplitCandidateRows\":0,\"maxColumnSegmentCount\":0,\"columnSegmentPatternConsistent\":false,\"columnSegmentPatternMismatchRows\":0,\"columnGridCandidate\":null,\"columnSplittingDecoded\":false,\"decoded\":false}"
+        );
+        assert_eq!(
+            core.get_cell_info(0, 0, 0, 1).unwrap(),
+            "{\"row\":1,\"col\":0,\"rowSpan\":1,\"colSpan\":1,\"source\":\"tableCandidateInterval\",\"sourceIntervalIndex\":1,\"sourceStart\":16,\"sourceEnd\":22,\"decoded\":false}"
+        );
+        assert_eq!(core.get_cell_paragraph_count(0, 0, 0, 0).unwrap(), 1);
+        assert_eq!(core.get_cell_paragraph_count(0, 0, 0, 9).unwrap(), 0);
+        assert_eq!(core.get_cell_paragraph_length(0, 0, 0, 1, 0).unwrap(), 2);
+        assert_eq!(core.get_cell_paragraph_length(0, 0, 0, 1, 1).unwrap(), 0);
+        assert_eq!(core.get_text_in_cell(0, 0, 0, 1, 0, 0, 10).unwrap(), "鉄道");
+        assert_eq!(core.get_text_in_cell(0, 0, 0, 1, 0, 1, 1).unwrap(), "道");
+        assert_eq!(
+            core.get_line_info_in_cell(0, 0, 0, 1, 0, 0).unwrap(),
+            "{\"lineIndex\":0,\"lineCount\":1,\"charStart\":0,\"charEnd\":2}"
+        );
+        assert_eq!(
+            core.get_table_signature(0, 0, 0).unwrap(),
+            "rjtd-table-candidate:0:byte:0x001c:2x1"
+        );
+    }
+
+    #[test]
+    fn table_row_column_segments_split_finance_numeric_runs() {
+        let segments = table_row_column_segments("　　売掛金2,441,9973,983,602△1,541,6042,766,830");
+
+        assert_eq!(segments.len(), 5);
+        assert_eq!(segments[0].kind(), TableCandidateColumnSegmentKind::Label);
+        assert_eq!(segments[0].text(), "売掛金");
+        assert_eq!(segments[1].kind(), TableCandidateColumnSegmentKind::Value);
+        assert_eq!(segments[1].text(), "2,441,997");
+        assert_eq!(segments[2].text(), "3,983,602");
+        assert_eq!(segments[3].text(), "△1,541,604");
+        assert_eq!(segments[4].text(), "2,766,830");
+
+        let total_segments = table_row_column_segments(
+            "      投資その他の資産合計4,249,16115.54,988,33217.2△  739,1706,241,65318.9",
+        );
+        assert_eq!(total_segments[0].text(), "投資その他の資産合計");
+        assert_eq!(total_segments[1].text(), "4,249,161");
+        assert_eq!(total_segments[2].text(), "15.5");
+        assert_eq!(total_segments[3].text(), "4,988,332");
+        assert_eq!(total_segments[4].text(), "17.2");
+        assert_eq!(total_segments[5].text(), "△  739,170");
+    }
+
+    #[test]
+    fn table_candidate_reports_column_segment_pattern_mismatches() {
+        let intervals = vec![
+            TableCandidateInterval::new(
+                0,
+                0,
+                0,
+                50,
+                "     (1)投資有価証券1,033,242996,74536,4961,353,292".to_string(),
+            ),
+            TableCandidateInterval::new(
+                1,
+                1,
+                51,
+                100,
+                "     (2)投資不動産1,939,4812,176,479△  236,9972,973,984".to_string(),
+            ),
+            TableCandidateInterval::new(
+                2,
+                2,
+                101,
+                165,
+                "      投資その他の資産合計4,249,16115.54,988,33217.2△  739,1706,241,65318.9"
+                    .to_string(),
+            ),
+        ];
+        let candidate = TableCandidate {
+            index: 0,
+            text_boundary_candidate_index: 0,
+            text_count_range_index: 0,
+            basis: TextCountRangeOverlapBasis::Unit,
+            delimiter_code: 0x000e,
+            interval_count: intervals.len(),
+            first_interval_index: 0,
+            last_interval_index: intervals.len() - 1,
+            source_start: 0,
+            source_end: 165,
+            intervals,
+        };
+
+        assert_eq!(candidate.column_split_candidate_row_count(), 3);
+        assert_eq!(candidate.max_column_segment_count(), 8);
+        assert!(!candidate.column_segment_pattern_consistent());
+        assert_eq!(candidate.column_segment_pattern_mismatch_rows(), 1);
+        assert_eq!(candidate.column_segment_grid_candidate(), None);
+    }
+
+    #[test]
+    fn table_candidate_reports_column_segment_grid_candidate_for_consistent_rows() {
+        let intervals = vec![
+            TableCandidateInterval::new(
+                0,
+                0,
+                0,
+                50,
+                "　　売掛金2,441,9973,983,602△1,541,6042,766,830".to_string(),
+            ),
+            TableCandidateInterval::new(
+                1,
+                1,
+                51,
+                100,
+                "　　買掛金1,111,1112,222,222△3,333,3334,444,444".to_string(),
+            ),
+        ];
+        let candidate = TableCandidate {
+            index: 0,
+            text_boundary_candidate_index: 0,
+            text_count_range_index: 0,
+            basis: TextCountRangeOverlapBasis::Unit,
+            delimiter_code: 0x000e,
+            interval_count: intervals.len(),
+            first_interval_index: 0,
+            last_interval_index: intervals.len() - 1,
+            source_start: 0,
+            source_end: 100,
+            intervals,
+        };
+
+        let grid = candidate.column_segment_grid_candidate().unwrap();
+        assert_eq!(grid.row_count(), 2);
+        assert_eq!(grid.column_count(), 5);
+        assert_eq!(grid.cell_count(), 10);
+        assert_eq!(grid.split_row_count(), 2);
+        assert_eq!(
+            grid.pattern(),
+            &[
+                TableCandidateColumnSegmentKind::Label,
+                TableCandidateColumnSegmentKind::Value,
+                TableCandidateColumnSegmentKind::Value,
+                TableCandidateColumnSegmentKind::Value,
+                TableCandidateColumnSegmentKind::Value
+            ]
+        );
+
+        let json = observed_table_dimensions_json(&candidate);
+        assert!(json.contains("\"colCount\":1"));
+        assert!(json.contains("\"columnGridCandidate\":{\"source\":\"columnSegments\""));
+        assert!(json.contains("\"rowCount\":2"));
+        assert!(json.contains("\"colCountCandidate\":5"));
+        assert!(json.contains("\"cellCountCandidate\":10"));
+        assert!(json.contains("\"pattern\":[\"label\",\"value\",\"value\",\"value\",\"value\"]"));
+        assert!(json.contains("\"geometryDecoded\":false"));
     }
 
     #[test]

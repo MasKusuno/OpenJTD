@@ -645,6 +645,26 @@ fn text_count_table_candidate_path() -> PathBuf {
     write_sample(compound.into_inner().into_inner())
 }
 
+fn text_count_finance_table_candidate_path() -> PathBuf {
+    let document_text = document_text_with_finance_table_rows();
+    let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    compound
+        .create_stream("/DocumentText")
+        .unwrap()
+        .write_all(&document_text)
+        .unwrap();
+    compound
+        .create_stream("/DocumentTextPositionTables")
+        .unwrap()
+        .write_all(&text_count_table_fixture_with_ranges(&[(
+            0,
+            document_text.len() as u32,
+        )]))
+        .unwrap();
+
+    write_sample(compound.into_inner().into_inner())
+}
+
 fn text_count_cluster_path() -> PathBuf {
     let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
     compound
@@ -3229,6 +3249,91 @@ fn table_candidates_command_reports_model_interval_evidence() {
 }
 
 #[test]
+fn table_candidate_context_command_reports_cell_like_shape() {
+    let path = text_count_table_candidate_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("table-candidate-context")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    fs::remove_file(&path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(
+        "table-candidate-context\t0\trange=0\tboundary=0\tbasis=byte\tdelimiter=0x001c\tintervals=2\tsource=10-22\tshape=non-empty=2,empty=0,min-chars=2,max-chars=2,total-chars=4,line-breaks=0,cell-like=true"
+    ));
+    assert!(stdout.contains("0:source-interval=0,source=10-14,chars=2,line-breaks=0,text=銀河"));
+    assert!(stdout.contains("1:source-interval=1,source=16-22,chars=2,line-breaks=0,text=鉄道"));
+    assert!(stdout.contains(
+        "table-candidate-context\t1\trange=0\tboundary=1\tbasis=unit\tdelimiter=0x001c\tintervals=2\tsource=5-11\tshape=non-empty=2,empty=0,min-chars=2,max-chars=2,total-chars=4,line-breaks=0,cell-like=true"
+    ));
+}
+
+#[test]
+fn table_cell_like_candidates_command_filters_strict_candidates() {
+    let path = text_count_table_candidate_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("table-cell-like-candidates")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    fs::remove_file(&path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        concat!(
+            "table-cell-like-candidate\t0\trange=0\tboundary=0\tbasis=byte\tdelimiter=0x001c\tintervals=2\tsource=10-22\tshape=non-empty=2,empty=0,min-chars=2,max-chars=2,total-chars=4,line-breaks=0,cell-like=true\ttexts=0:source-interval=0,source=10-14,chars=2,text=銀河|1:source-interval=1,source=16-22,chars=2,text=鉄道\tcolumn-split-candidate-rows=0\tmax-column-segment-count=0\tcolumn-segment-pattern-consistent=false\tcolumn-segment-pattern-mismatch-rows=0\tcolumn-grid-candidate=false\tcolumn-grid-shape=-\tcolumn-grid-pattern=-\tinterval-column-segments=-\tdecoded=false\n",
+            "table-cell-like-candidate\t1\trange=0\tboundary=1\tbasis=unit\tdelimiter=0x001c\tintervals=2\tsource=5-11\tshape=non-empty=2,empty=0,min-chars=2,max-chars=2,total-chars=4,line-breaks=0,cell-like=true\ttexts=0:source-interval=0,source=5-7,chars=2,text=銀河|1:source-interval=1,source=8-11,chars=2,text=鉄道\tcolumn-split-candidate-rows=0\tmax-column-segment-count=0\tcolumn-segment-pattern-consistent=false\tcolumn-segment-pattern-mismatch-rows=0\tcolumn-grid-candidate=false\tcolumn-grid-shape=-\tcolumn-grid-pattern=-\tinterval-column-segments=-\tdecoded=false\n",
+        )
+    );
+}
+
+#[test]
+fn table_cell_like_candidates_command_reports_column_segment_diagnostics() {
+    let path = text_count_finance_table_candidate_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("table-cell-like-candidates")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    fs::remove_file(&path).unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("table-cell-like-candidate\t0\t"));
+    assert!(stdout.contains("\tshape=non-empty=2,empty=0,"));
+    assert!(stdout.contains("\tcolumn-split-candidate-rows=2\t"));
+    assert!(stdout.contains("\tmax-column-segment-count=5\t"));
+    assert!(stdout.contains("\tcolumn-segment-pattern-consistent=true\t"));
+    assert!(stdout.contains("\tcolumn-segment-pattern-mismatch-rows=0\t"));
+    assert!(stdout.contains("\tcolumn-grid-candidate=true\t"));
+    assert!(stdout.contains("\tcolumn-grid-shape=2x5\t"));
+    assert!(stdout.contains("\tcolumn-grid-pattern=label|value|value|value|value\t"));
+    assert!(stdout.contains("interval-column-segments=0=0:label:2-5:売掛金"));
+    assert!(stdout.contains("1:value:5-14:2,441,997"));
+    assert!(stdout.contains("3:value:23-33:△1,541,604"));
+    assert!(stdout.contains(";1=0:label:0-6:流動資産合計"));
+    assert!(stdout.contains("4:value:28-34:17,327"));
+}
+
+#[test]
 fn text_boundary_candidate_context_command_reports_text_context() {
     let path = text_count_boundary_path();
     let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
@@ -4019,6 +4124,19 @@ fn document_text_fixture() -> Vec<u8> {
     bytes.extend_from_slice(&[0x00, 0x1c]);
     bytes.extend_from_slice(&[0x00, 0x1f]);
     for unit in "鉄道\n".encode_utf16() {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    bytes
+}
+
+fn document_text_with_finance_table_rows() -> Vec<u8> {
+    let mut bytes = b"SsmgV.01".to_vec();
+    extend_units(&mut bytes, &[0x001f]);
+    for unit in "　　売掛金2,441,9973,983,602△1,541,6042,766,830".encode_utf16() {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    extend_units(&mut bytes, &[0x001c, 0x001f]);
+    for unit in "流動資産合計4,249,16115.54,988,33217,327".encode_utf16() {
         bytes.extend_from_slice(&unit.to_be_bytes());
     }
     bytes

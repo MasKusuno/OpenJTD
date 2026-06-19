@@ -2828,6 +2828,71 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("table-candidate-context") => {
+            let path = required_path(args.next(), "table-candidate-context")?;
+            let bytes = read_file(path)?;
+            let payload = read_document_text_payload(&bytes).map_err(|error| error.to_string())?;
+            let map = map_document_text(payload.bytes());
+            let document = parse_document(&bytes).map_err(|error| error.to_string())?;
+
+            for candidate in document.table_candidates() {
+                let basis = range_basis_from_candidate(candidate.basis().as_str());
+                write_stdout_line(&format!(
+                    "table-candidate-context\t{}\trange={}\tboundary={}\tbasis={}\tdelimiter=0x{:04x}\tintervals={}\tsource={}-{}\tshape={}\tinterval-contexts={}\tdecoded=false",
+                    candidate.index(),
+                    candidate.text_count_range_index(),
+                    candidate.text_boundary_candidate_index(),
+                    candidate.basis().as_str(),
+                    candidate.delimiter_code(),
+                    candidate.interval_count(),
+                    candidate.source_start(),
+                    candidate.source_end(),
+                    format_table_candidate_text_shape(candidate, map.entries(), basis),
+                    format_table_candidate_interval_contexts(candidate, map.entries(), basis)
+                ))?;
+            }
+            Ok(())
+        }
+        Some("table-cell-like-candidates") => {
+            let path = required_path(args.next(), "table-cell-like-candidates")?;
+            let bytes = read_file(path)?;
+            let payload = read_document_text_payload(&bytes).map_err(|error| error.to_string())?;
+            let map = map_document_text(payload.bytes());
+            let document = parse_document(&bytes).map_err(|error| error.to_string())?;
+
+            for candidate in document.table_candidates() {
+                let basis = range_basis_from_candidate(candidate.basis().as_str());
+                if !is_table_candidate_cell_like(candidate, map.entries(), basis) {
+                    continue;
+                }
+                write_stdout_line(&format!(
+                    "table-cell-like-candidate\t{}\trange={}\tboundary={}\tbasis={}\tdelimiter=0x{:04x}\tintervals={}\tsource={}-{}\tshape={}\ttexts={}\tcolumn-split-candidate-rows={}\tmax-column-segment-count={}\tcolumn-segment-pattern-consistent={}\tcolumn-segment-pattern-mismatch-rows={}\tcolumn-grid-candidate={}\tcolumn-grid-shape={}\tcolumn-grid-pattern={}\tinterval-column-segments={}\tdecoded=false",
+                    candidate.index(),
+                    candidate.text_count_range_index(),
+                    candidate.text_boundary_candidate_index(),
+                    candidate.basis().as_str(),
+                    candidate.delimiter_code(),
+                    candidate.interval_count(),
+                    candidate.source_start(),
+                    candidate.source_end(),
+                    format_table_candidate_text_shape(candidate, map.entries(), basis),
+                    format_table_candidate_interval_texts(candidate, map.entries(), basis),
+                    candidate.column_split_candidate_row_count(),
+                    candidate.max_column_segment_count(),
+                    candidate.column_segment_pattern_consistent(),
+                    candidate.column_segment_pattern_mismatch_rows(),
+                    if candidate.column_segment_grid_candidate().is_some() {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                    format_table_candidate_column_grid_shape(candidate),
+                    format_table_candidate_column_grid_pattern(candidate),
+                    format_table_candidate_interval_column_segments(candidate)
+                ))?;
+            }
+            Ok(())
+        }
         Some("text-boundary-candidate-context") => {
             let path = required_path(args.next(), "text-boundary-candidate-context")?;
             let bytes = read_file(path)?;
@@ -4226,6 +4291,8 @@ Usage:
   rjtd text-position-count-control-ranges <file.jtd> [control-code]
   rjtd text-boundary-candidates <file.jtd>
   rjtd table-candidates <file.jtd>
+  rjtd table-candidate-context <file.jtd>
+  rjtd table-cell-like-candidates <file.jtd>
   rjtd text-boundary-candidate-context <file.jtd>
   rjtd text-boundary-candidate-agreement <file.jtd>
   rjtd text-boundary-candidate-layout-context <file.jtd>
@@ -6321,6 +6388,206 @@ fn format_table_candidate_intervals(candidate: &TableCandidate) -> String {
         })
         .collect::<Vec<_>>()
         .join("|")
+}
+
+fn format_table_candidate_text_shape(
+    candidate: &TableCandidate,
+    entries: &[rjtd_core::document_text::DocumentTextMapEntry],
+    basis: RangeBasis,
+) -> String {
+    let mut non_empty = 0usize;
+    let mut empty = 0usize;
+    let mut total_chars = 0usize;
+    let mut min_chars: Option<usize> = None;
+    let mut max_chars: Option<usize> = None;
+    let mut total_line_breaks = 0usize;
+
+    for interval in candidate.intervals() {
+        let text = range_visible_text(
+            entries,
+            interval.source_start(),
+            interval.source_end(),
+            basis,
+        );
+        let chars = text.chars().count();
+        let line_breaks = text_line_break_count(&text);
+        if chars == 0 {
+            empty += 1;
+        } else {
+            non_empty += 1;
+        }
+        total_chars += chars;
+        total_line_breaks += line_breaks;
+        min_chars = Some(min_chars.map_or(chars, |value| value.min(chars)));
+        max_chars = Some(max_chars.map_or(chars, |value| value.max(chars)));
+    }
+
+    format!(
+        "non-empty={non_empty},empty={empty},min-chars={},max-chars={},total-chars={total_chars},line-breaks={total_line_breaks},cell-like={}",
+        min_chars
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        max_chars
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        if non_empty > 1 && empty == 0 && total_line_breaks == 0 {
+            "true"
+        } else {
+            "false"
+        }
+    )
+}
+
+fn is_table_candidate_cell_like(
+    candidate: &TableCandidate,
+    entries: &[rjtd_core::document_text::DocumentTextMapEntry],
+    basis: RangeBasis,
+) -> bool {
+    let mut non_empty = 0usize;
+    let mut empty = 0usize;
+    let mut line_breaks = 0usize;
+
+    for interval in candidate.intervals() {
+        let text = range_visible_text(
+            entries,
+            interval.source_start(),
+            interval.source_end(),
+            basis,
+        );
+        if text.is_empty() {
+            empty += 1;
+        } else {
+            non_empty += 1;
+        }
+        line_breaks += text_line_break_count(&text);
+    }
+
+    non_empty > 1 && empty == 0 && line_breaks == 0
+}
+
+fn format_table_candidate_interval_texts(
+    candidate: &TableCandidate,
+    entries: &[rjtd_core::document_text::DocumentTextMapEntry],
+    basis: RangeBasis,
+) -> String {
+    if candidate.intervals().is_empty() {
+        return "-".to_string();
+    }
+
+    candidate
+        .intervals()
+        .iter()
+        .map(|interval| {
+            let text = range_visible_text(
+                entries,
+                interval.source_start(),
+                interval.source_end(),
+                basis,
+            );
+            format!(
+                "{}:source-interval={},source={}-{},chars={},text={}",
+                interval.index(),
+                interval.source_interval_index(),
+                interval.source_start(),
+                interval.source_end(),
+                text.chars().count(),
+                escaped_text_preview(&text, 80)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn format_table_candidate_interval_column_segments(candidate: &TableCandidate) -> String {
+    let interval_segments = candidate
+        .intervals()
+        .iter()
+        .filter(|interval| !interval.column_segments().is_empty())
+        .map(|interval| {
+            let segments = interval
+                .column_segments()
+                .iter()
+                .map(|segment| {
+                    format!(
+                        "{}:{}:{}-{}:{}",
+                        segment.index(),
+                        segment.kind().as_str(),
+                        segment.char_start(),
+                        segment.char_end(),
+                        escaped_text(segment.text())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            format!("{}={segments}", interval.index())
+        })
+        .collect::<Vec<_>>();
+
+    if interval_segments.is_empty() {
+        "-".to_string()
+    } else {
+        interval_segments.join(";")
+    }
+}
+
+fn format_table_candidate_column_grid_shape(candidate: &TableCandidate) -> String {
+    candidate
+        .column_segment_grid_candidate()
+        .map(|grid| format!("{}x{}", grid.row_count(), grid.column_count()))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_table_candidate_column_grid_pattern(candidate: &TableCandidate) -> String {
+    candidate
+        .column_segment_grid_candidate()
+        .map(|grid| {
+            grid.pattern()
+                .iter()
+                .map(|kind| kind.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_table_candidate_interval_contexts(
+    candidate: &TableCandidate,
+    entries: &[rjtd_core::document_text::DocumentTextMapEntry],
+    basis: RangeBasis,
+) -> String {
+    if candidate.intervals().is_empty() {
+        return "-".to_string();
+    }
+
+    candidate
+        .intervals()
+        .iter()
+        .map(|interval| {
+            let text = range_visible_text(
+                entries,
+                interval.source_start(),
+                interval.source_end(),
+                basis,
+            );
+            format!(
+                "{}:source-interval={},source={}-{},chars={},line-breaks={},text={},edges={}",
+                interval.index(),
+                interval.source_interval_index(),
+                interval.source_start(),
+                interval.source_end(),
+                text.chars().count(),
+                text_line_break_count(&text),
+                escaped_text_preview(&text, 80),
+                format_candidate_range_boundaries(
+                    entries,
+                    interval.source_start(),
+                    interval.source_end(),
+                    basis
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn range_basis_from_candidate(basis: &str) -> RangeBasis {
