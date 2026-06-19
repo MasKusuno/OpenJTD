@@ -109,13 +109,10 @@ fn object_stream_candidates_path() -> PathBuf {
         .write_all(&embedded_object)
         .unwrap();
     compound.create_storage("/EmbedItems/Embedding 2").unwrap();
-    let mut png = b"\xff\xd8\xff".to_vec();
-    png.extend_from_slice(b"data");
-    png.extend_from_slice(b"\xff\xd9");
     compound
         .create_stream("/EmbedItems/Embedding 2/Image.png")
         .unwrap()
-        .write_all(&png)
+        .write_all(minimal_jpeg_payload())
         .unwrap();
     compound
         .create_stream("/Figure")
@@ -148,13 +145,10 @@ fn object_frame_reference_path() -> PathBuf {
         .unwrap();
     compound.create_storage("/EmbedItems").unwrap();
     compound.create_storage("/EmbedItems/Embedding 2").unwrap();
-    let mut jpeg = b"\xff\xd8\xff".to_vec();
-    jpeg.extend_from_slice(b"data");
-    jpeg.extend_from_slice(b"\xff\xd9");
     compound
         .create_stream("/EmbedItems/Embedding 2/Image.jpg")
         .unwrap()
-        .write_all(&jpeg)
+        .write_all(minimal_jpeg_payload())
         .unwrap();
     compound
         .create_stream("/Frame")
@@ -176,13 +170,10 @@ fn object_frame_row_link_path() -> PathBuf {
         .unwrap();
     compound.create_storage("/EmbedItems").unwrap();
     compound.create_storage("/EmbedItems/Embedding 2").unwrap();
-    let mut jpeg = b"\xff\xd8\xff".to_vec();
-    jpeg.extend_from_slice(b"data");
-    jpeg.extend_from_slice(b"\xff\xd9");
     compound
         .create_stream("/EmbedItems/Embedding 2/Image.jpg")
         .unwrap()
-        .write_all(&jpeg)
+        .write_all(minimal_jpeg_payload())
         .unwrap();
 
     let suffix_row = [
@@ -228,7 +219,7 @@ fn object_fdm_index_path() -> PathBuf {
 
     let mut vector = vec![0x11; 32];
     vector.extend_from_slice(b"head");
-    vector.extend_from_slice(b"\xff\xd8\xffdata\xff\xd9");
+    vector.extend_from_slice(tiny_png_payload());
     compound
         .create_stream("/FigureData/main_data/FDMIndex")
         .unwrap()
@@ -270,7 +261,7 @@ fn object_fdm_frame_link_path() -> PathBuf {
 
     let mut vector = vec![0x11; 32];
     vector.extend_from_slice(b"head");
-    vector.extend_from_slice(b"\xff\xd8\xffdata\xff\xd9");
+    vector.extend_from_slice(tiny_png_payload());
     compound
         .create_stream("/FigureData/main_data/FDMIndex")
         .unwrap()
@@ -312,6 +303,24 @@ fn fdm_frame_record_fixture(
     row[36..38].copy_from_slice(&geometry.2.to_be_bytes());
     row[40..42].copy_from_slice(&geometry.3.to_be_bytes());
     row
+}
+
+fn minimal_jpeg_payload() -> &'static [u8] {
+    &[
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10,
+        0x00, 0x20, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff, 0xda, 0x00,
+        0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00, 0x00, 0xff, 0xd9,
+    ]
+}
+
+fn tiny_png_payload() -> &'static [u8] {
+    &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]
 }
 
 fn object_fdm_index_shape_path() -> PathBuf {
@@ -1901,7 +1910,7 @@ fn object_stream_candidates_command_reports_visual_object_inventory() {
         "stream=/EmbedItems/Embedding 1/JSFart2Contents\tsize=25\treasons=object-path,so-marker\timage-signatures=-\tsvg-offsets=-\tso-offsets=13\t"
     ));
     assert!(stdout.contains(
-        "stream=/EmbedItems/Embedding 2/Image.png\tsize=9\treasons=object-path,image-path,image-signature\timage-signatures=jpeg@0\t"
+        "stream=/EmbedItems/Embedding 2/Image.png\tsize=44\treasons=object-path,image-path,image-signature\timage-signatures=jpeg@0\t"
     ));
     assert!(stdout.contains(
         "stream=/Figure\tsize=12\treasons=shape-path,so-marker\timage-signatures=-\tsvg-offsets=-\tso-offsets=0\t"
@@ -2073,18 +2082,18 @@ fn object_image_frame_candidates_command_prioritizes_row12_tail_coordinates() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(
-            "object-image-frame-candidate\tsource=/EmbedItems/Embedding 2/Image.jpg\tembedding=2\tpayloads=1\tpayload-kinds=jpeg\tframe-rows=3\t"
+            "object-image-frame-candidate\tsource=/EmbedItems/Embedding 2/Image.jpg\tembedding=2\tpayloads=1\tpayload-kinds=jpeg\tpayload-dimensions=jpeg@0:32x16\tdimensioned-payloads=1\tframe-rows=3\t"
         ),
         "stdout: {stdout}"
     );
     assert!(stdout.contains(
-        "object-image-frame-candidate\tsource=/EmbedItems/Embedding 2/Image.jpg\tembedding=2\tpayloads=1\tpayload-kinds=jpeg\tframe-rows=3\t"
+        "object-image-frame-candidate\tsource=/EmbedItems/Embedding 2/Image.jpg\tembedding=2\tpayloads=1\tpayload-kinds=jpeg\tpayload-dimensions=jpeg@0:32x16\tdimensioned-payloads=1\tframe-rows=3\t"
     ));
     assert!(stdout.contains(
-        "row-families=frame-index-mixed-row12:1,frame-index-tail-coordinate-row12:1,frame-index-tail-window20:1\trow12-tail-coordinate=1\trow12-tail-zero=0\trow20-tail-window=1\trow20-linked=1\tle-row12=1\tpreferred=row12-tail-coordinate\tcoordinate-pairs=24:258x512\tdecoded=false"
+        "row-families=frame-index-mixed-row12:1,frame-index-tail-coordinate-row12:1,frame-index-tail-window20:1\trow12-tail-coordinate=1\trow12-tail-zero=0\trow20-tail-window=1\trow20-linked=1\tle-row12=1\tpreferred=row12-tail-coordinate\tcoordinate-pairs=24:258x512\tbest-coordinate-aspect-delta-permille=748\tdecoded=false"
     ));
     assert!(stdout.contains(
-        "summary\tsources=1\tframe-linked=1\tmissing-frame=0\tframe-rows=3\tpreferred=row12-tail-coordinate:1\tdecoded=false"
+        "summary\tsources=1\tframe-linked=1\tmissing-frame=0\tframe-rows=3\tdimensioned-payloads=1\taspect-candidates=1\tpreferred=row12-tail-coordinate:1\tdecoded=false"
     ));
 }
 
@@ -2107,7 +2116,7 @@ fn object_fdm_index_command_links_index_rows_to_vector_image_hits() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(
-            "object-fdm-index-summary\tindex=/FigureData/main_data/FDMIndex\tvector=/FigureData/main_data/FDMVector\tindex-bytes=64\tvector-bytes=45\tdeclared-count=2\tparsed-entries=2\ttrailing-bytes=0\tentries-with-image=1\timage-hits=1\tvector-missing=false\tdecoded=false"
+            "object-fdm-index-summary\tindex=/FigureData/main_data/FDMIndex\tvector=/FigureData/main_data/FDMVector\tindex-bytes=64\tvector-bytes=103\tdeclared-count=2\tparsed-entries=2\ttrailing-bytes=0\tentries-with-image=1\timage-hits=1\tvector-missing=false\tdecoded=false"
         ),
         "stdout: {stdout}"
     );
@@ -2115,10 +2124,10 @@ fn object_fdm_index_command_links_index_rows_to_vector_image_hits() {
         "object-fdm-index-entry\tindex=/FigureData/main_data/FDMIndex\tvector=/FigureData/main_data/FDMVector\trow=0\tindex-offset=20\tvector-offset=0\tnext-vector-offset=32\tvector-length=32\tkind=0x0b00\tbbox=1,2,3,4\tvalid-vector-offset=true\t"
     ));
     assert!(stdout.contains(
-        "object-fdm-index-entry\tindex=/FigureData/main_data/FDMIndex\tvector=/FigureData/main_data/FDMVector\trow=1\tindex-offset=42\tvector-offset=32\tnext-vector-offset=45\tvector-length=13\tkind=0x0b00\tbbox=-1,-2,10,20\tvalid-vector-offset=true\t"
+        "object-fdm-index-entry\tindex=/FigureData/main_data/FDMIndex\tvector=/FigureData/main_data/FDMVector\trow=1\tindex-offset=42\tvector-offset=32\tnext-vector-offset=103\tvector-length=71\tkind=0x0b00\tbbox=-1,-2,10,20\tvalid-vector-offset=true\t"
     ));
     assert!(
-        stdout.contains("image-signatures=jpeg@36\tsegment-image-signatures=jpeg@4\tdecoded=false")
+        stdout.contains("image-signatures=png@36\tsegment-image-signatures=png@4\tdecoded=false")
     );
     assert!(stdout.contains(
         "summary\tindexes=1\tentries=2\tentries-with-image=1\timage-hits=1\tmissing-vectors=0\tdecoded=false"
@@ -2143,10 +2152,10 @@ fn object_fdm_image_candidates_command_reports_unplaced_image_segments() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains(
-        "object-fdm-image-candidate\tsource=/FigureData/main_data/FDMVector\tindex=/FigureData/main_data/FDMIndex\trow=1\tvector-offset=32\tnext-vector-offset=45\tvector-length=13\tkind=0x0b00\tbbox=-1,-2,10,20\tnormalized-bbox=-1,-2,10,20\tbbox-size=11x22\tbbox-order=forward\tbbox-plausible=true\timage-hits=1\tcomplete-payloads=1"
+        "object-fdm-image-candidate\tsource=/FigureData/main_data/FDMVector\tindex=/FigureData/main_data/FDMIndex\trow=1\tvector-offset=32\tnext-vector-offset=103\tvector-length=71\tkind=0x0b00\tbbox=-1,-2,10,20\tnormalized-bbox=-1,-2,10,20\tbbox-size=11x22\tbbox-order=forward\tbbox-plausible=true\timage-hits=1\tcomplete-payloads=1"
     ));
     assert!(stdout.contains(
-        "image-signatures=jpeg@36\tsegment-image-signatures=jpeg@4\trenderable=false\treason=page-placement-unproven\tdecoded=false"
+        "image-signatures=png@36\tsegment-image-signatures=png@4\trenderable=false\treason=page-placement-unproven\tdecoded=false"
     ));
     assert!(stdout.contains(
         "summary\tsources=1\tcandidates=1\timage-hits=1\tcomplete-payloads=1\tbbox-plausible=1\trenderable=0\tdecoded=false"
@@ -2170,9 +2179,12 @@ fn object_fdm_frame_links_command_connects_fdm_rows_to_frame_records() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(
-        "object-fdm-frame-link\tsource=/FigureData/main_data/FDMVector\tindex=/FigureData/main_data/FDMIndex\trow=1\timage-hits=1\tcomplete-payloads=1\tframe-linked=true\tframe-source=/Frame\tframe-row=1\tframe-start=76\tframe-object-id=1\tframe-kind=0x0102\tframe-type=0x0007\tframe-geometry=100,200,300,400\tlink-basis=fdm-row-index-to-frame-object-id\trenderable=false\treason=page-placement-unproven\tdecoded=false"
-    ));
+    assert!(
+        stdout.contains(
+            "object-fdm-frame-link\tsource=/FigureData/main_data/FDMVector\tindex=/FigureData/main_data/FDMIndex\trow=1\timage-hits=1\tcomplete-payloads=1\tframe-linked=true\tframe-source=/Frame\tframe-row=1\tframe-start=76\tframe-object-id=1\tframe-kind=0x0102\tframe-type=0x0007\tframe-geometry=100,200,300,400\tframe-size=300x400\tpayload-dimensions=png@36:1x1\tdimensioned-payloads=1\tbest-aspect-delta-permille=250\tlink-basis=fdm-row-index-to-frame-object-id\trenderable=false\treason=page-placement-unproven\tdecoded=false"
+        ),
+        "stdout: {stdout}"
+    );
     assert!(stdout.contains(
         "summary\tsources=1\tcandidates=1\tframe-linked=1\tmissing-frame=0\tcomplete-payloads=1\trenderable=0\tdecoded=false"
     ));

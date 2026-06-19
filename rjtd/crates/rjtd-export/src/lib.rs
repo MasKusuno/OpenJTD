@@ -4,13 +4,13 @@ use rjtd_core::record::UnknownRecordKind;
 use rjtd_core::style_stream::{StyleStreamRecordSummary, summarize_style_stream};
 use rjtd_model::{
     Block, Document, DocumentCore, Inline, ObjectFdmIndexBbox, ObjectFdmIndexEntryCandidate,
-    ObjectFrameRecordCandidate, ObjectFrameReferenceRowCandidate, ObjectImageHeaderFieldCandidates,
-    ObjectImageDimensions, ObjectImageNumericHeaderField, ObjectImagePayloadEnvelope,
-    ObjectImagePayloadSpan,
-    ObjectImageSourcePathCandidate, ObjectStreamCandidate, ObjectStreamOwnershipCandidate,
-    ObjectStreamOwnershipReferenceCandidate, StyleRef, TextBoundaryCandidate, TextControlBoundary,
-    TextCountControlRangeOverlap, TextCountRange, TextCountRangeOverlap, TextLayoutExactEvidence,
-    TextParagraphBoundaryCandidate, TextSourceSpan, UnknownObject,
+    ObjectFrameRecordCandidate, ObjectFrameReferenceRowCandidate, ObjectImageDimensions,
+    ObjectImageHeaderFieldCandidates, ObjectImageNumericHeaderField, ObjectImagePayloadEnvelope,
+    ObjectImagePayloadSpan, ObjectImageSourcePathCandidate, ObjectStreamCandidate,
+    ObjectStreamOwnershipCandidate, ObjectStreamOwnershipReferenceCandidate, StyleRef,
+    TextBoundaryCandidate, TextControlBoundary, TextCountControlRangeOverlap, TextCountRange,
+    TextCountRangeOverlap, TextLayoutExactEvidence, TextParagraphBoundaryCandidate, TextSourceSpan,
+    UnknownObject,
 };
 
 pub fn to_plain_text(document: &Document) -> String {
@@ -542,7 +542,10 @@ fn push_object_image_payload_span_json(output: &mut String, span: &ObjectImagePa
     output.push_str(",\"decoded\":false}");
 }
 
-fn push_object_image_dimensions_json(output: &mut String, dimensions: Option<ObjectImageDimensions>) {
+fn push_object_image_dimensions_json(
+    output: &mut String,
+    dimensions: Option<ObjectImageDimensions>,
+) {
     if let Some(dimensions) = dimensions {
         output.push_str("{\"width\":");
         output.push_str(&dimensions.width().to_string());

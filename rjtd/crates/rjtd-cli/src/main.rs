@@ -1053,6 +1053,8 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
             let mut missing_frame_count = 0usize;
             let mut preferred_counts = BTreeMap::<String, usize>::new();
             let mut total_frame_rows = 0usize;
+            let mut total_dimensioned_payloads = 0usize;
+            let mut total_aspect_candidates = 0usize;
 
             for candidate in document
                 .object_stream_candidates()
@@ -1062,6 +1064,14 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
                 source_count += 1;
                 let summary = summarize_object_image_frame_candidate(candidate);
                 total_frame_rows += summary.frame_rows;
+                let dimensioned_payloads =
+                    object_payload_dimension_count(candidate.image_payload_spans());
+                let aspect_candidates = coordinate_payload_aspect_candidate_count(
+                    &summary.coordinate_pairs,
+                    candidate.image_payload_spans(),
+                );
+                total_dimensioned_payloads += dimensioned_payloads;
+                total_aspect_candidates += aspect_candidates;
                 if summary.frame_rows == 0 {
                     missing_frame_count += 1;
                 } else {
@@ -1072,11 +1082,13 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
                     .or_default() += 1;
 
                 write_stdout_line(&format!(
-                    "object-image-frame-candidate\tsource={}\tembedding={}\tpayloads={}\tpayload-kinds={}\tframe-rows={}\trow-families={}\trow12-tail-coordinate={}\trow12-tail-zero={}\trow20-tail-window={}\trow20-linked={}\tle-row12={}\tpreferred={}\tcoordinate-pairs={}\tdecoded=false",
+                    "object-image-frame-candidate\tsource={}\tembedding={}\tpayloads={}\tpayload-kinds={}\tpayload-dimensions={}\tdimensioned-payloads={}\tframe-rows={}\trow-families={}\trow12-tail-coordinate={}\trow12-tail-zero={}\trow20-tail-window={}\trow20-linked={}\tle-row12={}\tpreferred={}\tcoordinate-pairs={}\tbest-coordinate-aspect-delta-permille={}\tdecoded=false",
                     escaped_path(candidate.path()),
                     format_optional_usize(summary.embedding_index),
                     candidate.image_payload_spans().len(),
                     format_string_set(&summary.payload_kinds),
+                    format_object_payload_dimensions(candidate.image_payload_spans()),
+                    dimensioned_payloads,
                     summary.frame_rows,
                     format_string_counts(&summary.family_counts),
                     summary.row12_tail_coordinate,
@@ -1085,16 +1097,22 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
                     summary.row20_linked,
                     summary.le_row12,
                     summary.preferred,
-                    format_object_frame_coordinate_pairs(&summary.coordinate_pairs)
+                    format_object_frame_coordinate_pairs(&summary.coordinate_pairs),
+                    format_optional_u64(best_coordinate_payload_aspect_delta_permille(
+                        &summary.coordinate_pairs,
+                        candidate.image_payload_spans()
+                    ))
                 ))?;
             }
 
             write_stdout_line(&format!(
-                "summary\tsources={}\tframe-linked={}\tmissing-frame={}\tframe-rows={}\tpreferred={}\tdecoded=false",
+                "summary\tsources={}\tframe-linked={}\tmissing-frame={}\tframe-rows={}\tdimensioned-payloads={}\taspect-candidates={}\tpreferred={}\tdecoded=false",
                 source_count,
                 frame_linked_count,
                 missing_frame_count,
                 total_frame_rows,
+                total_dimensioned_payloads,
+                total_aspect_candidates,
                 format_string_counts(&preferred_counts)
             ))?;
             Ok(())
@@ -5273,6 +5291,13 @@ fn fdm_entry_complete_payload_count(
     candidate: &ModelObjectStreamCandidate,
     entry: &ObjectFdmIndexEntryCandidate,
 ) -> usize {
+    fdm_entry_complete_payload_spans(candidate, entry).len()
+}
+
+fn fdm_entry_complete_payload_spans<'a>(
+    candidate: &'a ModelObjectStreamCandidate,
+    entry: &ObjectFdmIndexEntryCandidate,
+) -> Vec<&'a ObjectImagePayloadSpan> {
     candidate
         .image_payload_spans()
         .iter()
@@ -5281,7 +5306,7 @@ fn fdm_entry_complete_payload_count(
                 && span.signature_offset() >= entry.vector_offset()
                 && span.signature_offset() < entry.next_vector_offset()
         })
-        .count()
+        .collect()
 }
 
 fn fdm_frame_record_for_entry(
@@ -5345,6 +5370,65 @@ fn format_optional_frame_geometry(record: Option<&ObjectFrameRecordCandidate>) -
         .unwrap_or_else(|| "-".to_string())
 }
 
+fn format_optional_frame_size(record: Option<&ObjectFrameRecordCandidate>) -> String {
+    record
+        .map(|record| format!("{}x{}", record.width(), record.height()))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_fdm_payload_dimensions(spans: &[&ObjectImagePayloadSpan]) -> String {
+    let dimensions = spans
+        .iter()
+        .filter_map(|span| {
+            let dimensions = span.dimensions()?;
+            Some(format!(
+                "{}@{}:{}x{}",
+                span.kind(),
+                span.signature_offset(),
+                dimensions.width(),
+                dimensions.height()
+            ))
+        })
+        .collect::<Vec<_>>();
+    if dimensions.is_empty() {
+        "-".to_string()
+    } else {
+        dimensions.join(",")
+    }
+}
+
+fn fdm_payload_dimension_count(spans: &[&ObjectImagePayloadSpan]) -> usize {
+    spans
+        .iter()
+        .filter(|span| span.dimensions().is_some())
+        .count()
+}
+
+fn best_frame_payload_aspect_delta_permille(
+    frame_record: Option<&ObjectFrameRecordCandidate>,
+    spans: &[&ObjectImagePayloadSpan],
+) -> Option<u64> {
+    let frame_record = frame_record?;
+    let frame_width = u128::from(frame_record.width());
+    let frame_height = u128::from(frame_record.height());
+    if frame_width == 0 || frame_height == 0 {
+        return None;
+    }
+
+    spans
+        .iter()
+        .filter_map(|span| {
+            let dimensions = span.dimensions()?;
+            aspect_delta_permille(
+                frame_width,
+                frame_height,
+                u128::from(dimensions.width()),
+                u128::from(dimensions.height()),
+            )
+        })
+        .min()
+}
+
 fn object_frame_coordinate_pair(
     row: &ObjectFrameReferenceRowCandidate,
 ) -> Option<ObjectFrameCoordinatePair> {
@@ -5367,6 +5451,86 @@ fn format_object_frame_coordinate_pairs(pairs: &[ObjectFrameCoordinatePair]) -> 
         .map(|pair| format!("{}:{}x{}", pair.row_start, pair.x, pair.y))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn format_object_payload_dimensions(spans: &[ObjectImagePayloadSpan]) -> String {
+    let dimensions = spans
+        .iter()
+        .filter_map(|span| {
+            let dimensions = span.dimensions()?;
+            Some(format!(
+                "{}@{}:{}x{}",
+                span.kind(),
+                span.signature_offset(),
+                dimensions.width(),
+                dimensions.height()
+            ))
+        })
+        .collect::<Vec<_>>();
+    if dimensions.is_empty() {
+        "-".to_string()
+    } else {
+        dimensions.join(",")
+    }
+}
+
+fn object_payload_dimension_count(spans: &[ObjectImagePayloadSpan]) -> usize {
+    spans
+        .iter()
+        .filter(|span| span.dimensions().is_some())
+        .count()
+}
+
+fn coordinate_payload_aspect_candidate_count(
+    pairs: &[ObjectFrameCoordinatePair],
+    spans: &[ObjectImagePayloadSpan],
+) -> usize {
+    let dimensioned_payloads = object_payload_dimension_count(spans);
+    let nonzero_pairs = pairs
+        .iter()
+        .filter(|pair| pair.x != 0 && pair.y != 0)
+        .count();
+    dimensioned_payloads.saturating_mul(nonzero_pairs)
+}
+
+fn best_coordinate_payload_aspect_delta_permille(
+    pairs: &[ObjectFrameCoordinatePair],
+    spans: &[ObjectImagePayloadSpan],
+) -> Option<u64> {
+    pairs
+        .iter()
+        .filter(|pair| pair.x != 0 && pair.y != 0)
+        .flat_map(|pair| {
+            spans.iter().filter_map(move |span| {
+                let dimensions = span.dimensions()?;
+                aspect_delta_permille(
+                    u128::from(pair.x),
+                    u128::from(pair.y),
+                    u128::from(dimensions.width()),
+                    u128::from(dimensions.height()),
+                )
+            })
+        })
+        .min()
+}
+
+fn aspect_delta_permille(
+    frame_width: u128,
+    frame_height: u128,
+    image_width: u128,
+    image_height: u128,
+) -> Option<u64> {
+    if frame_width == 0 || frame_height == 0 || image_width == 0 || image_height == 0 {
+        return None;
+    }
+    let left = frame_width.saturating_mul(image_height);
+    let right = image_width.saturating_mul(frame_height);
+    let denominator = left.max(right);
+    if denominator == 0 {
+        return None;
+    }
+    let delta = left.abs_diff(right);
+    Some(((delta.saturating_mul(1000)) / denominator) as u64)
 }
 
 const FDM_INDEX_HEADER_BYTES: usize = 20;
@@ -7499,6 +7663,12 @@ fn format_optional_u16_hex(value: Option<u16>) -> String {
 }
 
 fn format_optional_i64(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_optional_u64(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string())

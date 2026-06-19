@@ -8045,8 +8045,66 @@ fn image_payload_candidate(
 }
 
 fn image_payload_dimensions(payload: &[u8]) -> Option<ObjectImageDimensions> {
-    let image = image::load_from_memory(payload).ok()?;
-    Some(ObjectImageDimensions::new(image.width(), image.height()))
+    if let Ok(image) = image::load_from_memory(payload) {
+        return Some(ObjectImageDimensions::new(image.width(), image.height()));
+    }
+    jpeg_payload_dimensions(payload)
+}
+
+fn jpeg_payload_dimensions(payload: &[u8]) -> Option<ObjectImageDimensions> {
+    if payload.get(0..2)? != b"\xff\xd8" {
+        return None;
+    }
+
+    let mut cursor = 2usize;
+    while cursor < payload.len() {
+        while cursor < payload.len() && payload[cursor] != 0xff {
+            cursor += 1;
+        }
+        while cursor < payload.len() && payload[cursor] == 0xff {
+            cursor += 1;
+        }
+
+        let marker = *payload.get(cursor)?;
+        cursor += 1;
+        if marker == 0xda || marker == 0xd9 {
+            return None;
+        }
+        if marker == 0x01 || (0xd0..=0xd8).contains(&marker) {
+            continue;
+        }
+
+        let length_end = cursor.checked_add(2)?;
+        let length_bytes = payload.get(cursor..length_end)?;
+        let segment_len = u16::from_be_bytes([length_bytes[0], length_bytes[1]]) as usize;
+        if segment_len < 2 {
+            return None;
+        }
+        let data_start = length_end;
+        let data_end = data_start.checked_add(segment_len - 2)?;
+        let data = payload.get(data_start..data_end)?;
+
+        if is_jpeg_sof_marker(marker) {
+            if data.len() < 5 {
+                return None;
+            }
+            let height = u16::from_be_bytes([data[1], data[2]]) as u32;
+            let width = u16::from_be_bytes([data[3], data[4]]) as u32;
+            return (width != 0 && height != 0)
+                .then_some(ObjectImageDimensions::new(width, height));
+        }
+
+        cursor = data_end;
+    }
+
+    None
+}
+
+fn is_jpeg_sof_marker(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc5 | 0xc6 | 0xc7 | 0xc9 | 0xca | 0xcb | 0xcd | 0xce | 0xcf
+    )
 }
 
 fn image_payload_envelope(
@@ -8189,12 +8247,59 @@ fn image_mime_for_kind(kind: &str) -> &'static str {
 }
 
 fn jpeg_payload_end(stream: &[u8], offset: usize) -> Option<usize> {
-    let search_start = offset.checked_add(2)?;
+    let search_start = jpeg_entropy_data_start(stream, offset)?;
     stream
         .get(search_start..)?
         .windows(2)
         .position(|window| window == [0xff, 0xd9])
         .map(|relative| search_start + relative + 2)
+}
+
+fn jpeg_entropy_data_start(stream: &[u8], offset: usize) -> Option<usize> {
+    if stream.get(offset..offset.checked_add(2)?)? != b"\xff\xd8" {
+        return None;
+    }
+
+    let mut cursor = offset.checked_add(2)?;
+    let mut found_sof = false;
+    while cursor < stream.len() {
+        while cursor < stream.len() && stream[cursor] != 0xff {
+            cursor += 1;
+        }
+        while cursor < stream.len() && stream[cursor] == 0xff {
+            cursor += 1;
+        }
+
+        let marker = *stream.get(cursor)?;
+        cursor += 1;
+        if marker == 0xd9 {
+            return None;
+        }
+        if marker == 0x01 || (0xd0..=0xd8).contains(&marker) {
+            continue;
+        }
+
+        let length_end = cursor.checked_add(2)?;
+        let length_bytes = stream.get(cursor..length_end)?;
+        let segment_len = u16::from_be_bytes([length_bytes[0], length_bytes[1]]) as usize;
+        if segment_len < 2 {
+            return None;
+        }
+        let data_start = length_end;
+        let data_end = data_start.checked_add(segment_len - 2)?;
+        stream.get(data_start..data_end)?;
+
+        if is_jpeg_sof_marker(marker) {
+            found_sof = true;
+        }
+        if marker == 0xda {
+            return found_sof.then_some(data_end);
+        }
+
+        cursor = data_end;
+    }
+
+    None
 }
 
 fn png_payload_end(stream: &[u8], offset: usize) -> Option<usize> {
@@ -10120,7 +10225,10 @@ fn push_object_image_payload_span_json(output: &mut String, span: &ObjectImagePa
     output.push_str(",\"decoded\":false}");
 }
 
-fn push_object_image_dimensions_json(output: &mut String, dimensions: Option<ObjectImageDimensions>) {
+fn push_object_image_dimensions_json(
+    output: &mut String,
+    dimensions: Option<ObjectImageDimensions>,
+) {
     if let Some(dimensions) = dimensions {
         output.push_str("{\"width\":");
         output.push_str(&dimensions.width().to_string());
@@ -11374,13 +11482,27 @@ mod tests {
     }
 
     #[test]
+    fn image_payload_dimensions_reads_jpeg_sof_metadata() {
+        let payload = minimal_jpeg_payload();
+
+        let dimensions = jpeg_payload_dimensions(payload).unwrap();
+        assert_eq!(dimensions.width(), 32);
+        assert_eq!(dimensions.height(), 16);
+        assert_eq!(image_payload_dimensions(payload), Some(dimensions));
+        assert_eq!(jpeg_payload_end(payload, 0), Some(payload.len()));
+        assert_eq!(
+            jpeg_payload_end(b"\xff\xd8\xff\xff\xff\xfc\0\0\0\0\xff\xd9", 0),
+            None
+        );
+    }
+
+    #[test]
     fn parser_preserves_object_stream_candidates_as_model_evidence() {
         let image_stream_path = "/EmbedItems/Embedding 3/Contents";
+        let jpeg_payload = minimal_jpeg_payload();
         let (mut image_payload, signature_offset, payload_end) =
-            image_payload_with_header_fixture();
-        image_payload.extend_from_slice(b"\xff\xd8\xff");
-        image_payload.extend_from_slice(b"payload");
-        image_payload.extend_from_slice(b"\xff\xd9");
+            image_payload_with_header_fixture(jpeg_payload.len());
+        image_payload.extend_from_slice(jpeg_payload);
         image_payload.extend_from_slice(b"tail");
         let so_offset = image_payload.len();
         image_payload.extend_from_slice(b"SO\0\0");
@@ -11443,8 +11565,12 @@ mod tests {
         assert_eq!(image_span.signature_offset(), signature_offset);
         assert_eq!(image_span.start(), signature_offset);
         assert_eq!(image_span.end(), payload_end);
-        assert_eq!(image_span.len(), 12);
+        assert_eq!(image_span.len(), jpeg_payload.len());
         assert!(image_span.complete());
+        assert_eq!(
+            image_span.dimensions(),
+            Some(ObjectImageDimensions::new(32, 16))
+        );
         assert_eq!(
             image_span.payload(),
             &image_payload[signature_offset..payload_end]
@@ -11463,7 +11589,7 @@ mod tests {
         );
         let declared_length = image_span.envelope().declared_payload_length().unwrap();
         assert_eq!(declared_length.offset(), signature_offset - 4);
-        assert_eq!(declared_length.value(), 12);
+        assert_eq!(declared_length.value(), jpeg_payload.len());
         assert_eq!(declared_length.endian(), "le32");
         let header_fields = image_span.envelope().header_fields();
         assert_eq!(header_fields.u16_le_prefix()[0].value(), 9);
@@ -11536,7 +11662,7 @@ mod tests {
         let mut vector_payload = vec![0xaa; 32];
         vector_payload.extend_from_slice(b"lead");
         let image_offset = vector_payload.len();
-        vector_payload.extend_from_slice(b"\xff\xd8\xffpayload\xff\xd9");
+        vector_payload.extend_from_slice(minimal_jpeg_payload());
         let vector_len = vector_payload.len();
         let bytes = cfb_with_streams(&[
             ("/DocumentText", &document_text_fixture()),
@@ -11579,7 +11705,7 @@ mod tests {
         assert_eq!(second.kind(), 0x2002);
         assert_eq!(second.bbox(), ObjectFdmIndexBbox::new(-10, -20, 30, 40));
         assert!(second.valid_vector_offset());
-        assert_eq!(second.vector_prefix(), b"lead\xff\xd8\xffpayload\xff\xd9");
+        assert!(second.vector_prefix().starts_with(b"lead\xff\xd8\xff"));
         assert_eq!(second.image_signature_hits()[0].kind(), "jpeg");
         assert_eq!(second.image_signature_hits()[0].offset(), image_offset);
         assert_eq!(second.segment_image_signature_hits()[0].kind(), "jpeg");
@@ -11690,10 +11816,10 @@ mod tests {
     #[test]
     fn document_core_reports_object_stream_candidates_as_diagnostics() {
         let image_stream_path = "/EmbedItems/Embedding 3/Contents";
-        let (mut image_payload, signature_offset, _) = image_payload_with_header_fixture();
-        image_payload.extend_from_slice(b"\xff\xd8\xff");
-        image_payload.extend_from_slice(b"payload");
-        image_payload.extend_from_slice(b"\xff\xd9");
+        let jpeg_payload = minimal_jpeg_payload();
+        let (mut image_payload, signature_offset, _) =
+            image_payload_with_header_fixture(jpeg_payload.len());
+        image_payload.extend_from_slice(jpeg_payload);
         let figure_reference_payload = b"\x03\0\0\0ref\0\x03".to_vec();
         let bytes = cfb_with_streams(&[
             ("/DocumentText", &document_text_fixture()),
@@ -11719,7 +11845,7 @@ mod tests {
         assert!(info.contains(&format!(
             "\"imagePayloads\":[{{\"kind\":\"jpeg\",\"mime\":\"image/jpeg\",\"signatureOffset\":{signature_offset}"
         )));
-        assert!(info.contains("\"declaredPayloadLength\":12"));
+        assert!(info.contains(&format!("\"declaredPayloadLength\":{}", jpeg_payload.len())));
         assert!(info.contains(&format!(
             "\"declaredPayloadLengthOffset\":{}",
             signature_offset - 4
@@ -12911,7 +13037,16 @@ mod tests {
         bytes
     }
 
-    fn image_payload_with_header_fixture() -> (Vec<u8>, usize, usize) {
+    fn minimal_jpeg_payload() -> &'static [u8] {
+        &[
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00,
+            0x10, 0x00, 0x20, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff,
+            0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00, 0x00,
+            0xff, 0xd9,
+        ]
+    }
+
+    fn image_payload_with_header_fixture(payload_len: usize) -> (Vec<u8>, usize, usize) {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&9_u16.to_le_bytes());
         bytes.extend_from_slice(&1_u16.to_le_bytes());
@@ -12924,10 +13059,10 @@ mod tests {
         bytes.extend_from_slice(source_path);
         bytes.push(0);
         bytes.extend_from_slice(&1_u32.to_le_bytes());
-        bytes.extend_from_slice(&12_u32.to_le_bytes());
+        bytes.extend_from_slice(&(payload_len as u32).to_le_bytes());
 
         let signature_offset = bytes.len();
-        (bytes, signature_offset, signature_offset + 12)
+        (bytes, signature_offset, signature_offset + payload_len)
     }
 
     fn document_text_with_control_boundary() -> Vec<u8> {

@@ -560,6 +560,7 @@ name = "rjtd-model"
 version = "0.0.0"
 dependencies = [
  "cfb",
+ "image",
  "rjtd-core",
 ]
 
