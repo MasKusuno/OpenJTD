@@ -82,6 +82,49 @@ const EMBEDDING_INFO_FRAME_HEIGHT_TRAILING_OFFSET: usize = 8;
 const FDM_INDEX_HEADER_BYTES: usize = 20;
 const FDM_INDEX_ENTRY_BYTES: usize = 22;
 const FDM_INDEX_DECLARED_COUNT_OFFSET: usize = 18;
+const FDM_VECTOR_SEGMENT_MAGIC: &[u8; 4] = b"\x01\x00\x0b\x60";
+const FDM_VECTOR_SEGMENT_HEADER_BYTES: usize = 52;
+const FDM_VECTOR_COMMAND_OFFSET_BYTES: usize = 2;
+const FDM_VECTOR_COMMAND_DECLARED_LEN_OFFSET: usize = 4;
+const FDM_VECTOR_COMMAND_BBOX_OFFSET: usize = 20;
+const FDM_VECTOR_COMMAND_BBOX_MARKER: &[u8; 4] = b"\xff\x00\x0a\x60";
+const FDM_VECTOR_COMMAND_LINE_MARKER: &[u8; 4] = b"\xff\x00\x01\x60";
+const FDM_VECTOR_COMMAND_NESTED_LINE_MARKER: &[u8; 4] = b"\x00\x00\x01\x60";
+const FDM_VECTOR_COMMAND_LINE_POINTS_OFFSET: usize = 16;
+const FDM_VECTOR_COMMAND_ELLIPSE_COLOR_OFFSET: usize = 12;
+const FDM_VECTOR_COMMAND_ELLIPSE_CENTER_OFFSET: usize = 16;
+const FDM_VECTOR_COMMAND_ELLIPSE_RADIUS_OFFSET: usize = 24;
+const FDM_VECTOR_COMMAND_PATH_POINT_COUNT_OFFSET: usize = 16;
+const FDM_VECTOR_COMMAND_PATH_POINTS_OFFSET: usize = 18;
+const FDM_VECTOR_COMMAND_ELLIPSE_MARKERS: [[u8; 4]; 2] =
+    [*b"\xff\x00\x04\x60", *b"\x00\x00\x04\x60"];
+const FDM_VECTOR_COMMAND_PATH_MARKERS: [[u8; 4]; 4] = [
+    *b"\xff\x00\x06\x60",
+    *b"\xff\x00\x09\x60",
+    *b"\x00\x00\x06\x60",
+    *b"\x00\x00\x09\x60",
+];
+const FDM_VECTOR_NESTED_PRIMITIVE_MARKERS: [[u8; 4]; 8] = [
+    *b"\x00\x00\x01\x60",
+    *b"\x00\x00\x04\x60",
+    *b"\x00\x00\x06\x60",
+    *b"\x00\x00\x09\x60",
+    *b"\xff\x00\x01\x60",
+    *b"\xff\x00\x04\x60",
+    *b"\xff\x00\x06\x60",
+    *b"\xff\x00\x09\x60",
+];
+const FDM_VECTOR_RENDERED_PRIMITIVE_MARKERS: [[u8; 4]; 8] = [
+    *b"\xff\x00\x01\x60",
+    *b"\xff\x00\x04\x60",
+    *b"\xff\x00\x06\x60",
+    *b"\xff\x00\x09\x60",
+    *b"\x00\x00\x01\x60",
+    *b"\x00\x00\x04\x60",
+    *b"\x00\x00\x06\x60",
+    *b"\x00\x00\x09\x60",
+];
+const FDM_VECTOR_PATH_DIAGNOSTIC_MAX_SPAN_RATIO: f32 = 0.28;
 const FRAME_RECORD_HEADER_BYTES: usize = 16;
 const FRAME_RECORD_BYTES: usize = 60;
 const FRAME_RECORD_DECLARED_COUNT_OFFSET: usize = 14;
@@ -477,6 +520,15 @@ const GINGA_COLOPHON_TOP_RATIO: f32 = 0.48;
 const GINGA_COLOPHON_NOTE_DISPLAY_COLUMNS: usize = 48;
 const TSAITEN_REFERENCE_PAGE_WIDTH_PX: f32 = 793.7;
 const TSAITEN_REFERENCE_PAGE_HEIGHT_PX: f32 = 1122.5;
+const SHANAI_LAN_REFERENCE_PAGE_WIDTH_PX: f32 = 1122.5;
+const SHANAI_LAN_REFERENCE_PAGE_HEIGHT_PX: f32 = 793.7;
+const SHANAI_LAN_REFERENCE_CONTENT_LEFT_PX: f32 = 46.0;
+const SHANAI_LAN_REFERENCE_CONTENT_TOP_PX: f32 = 38.7;
+const SHANAI_LAN_REFERENCE_CONTENT_WIDTH_PX: f32 = 1021.3;
+const SHANAI_LAN_REFERENCE_CONTENT_HEIGHT_PX: f32 = 677.3;
+const SHANAI_LAN_FDM_FRAME_X_DIVISOR: f32 = 24.0;
+const SHANAI_LAN_FDM_FRAME_Y_DIVISOR: f32 = 1.0;
+const SHANAI_LAN_FDM_FRAME_SIZE_DIVISOR: f32 = 24.0;
 const DOCUMENT_VIEW_STYLES_PAGE_WIDTH_OFFSET: usize = 16;
 const DOCUMENT_VIEW_STYLES_PAGE_HEIGHT_OFFSET: usize = 20;
 const PAGE_LAYOUT_STYLE_RECORD_CODE: u16 = 0x4444;
@@ -510,6 +562,7 @@ pub struct PageLayout {
     width_px: f32,
     height_px: f32,
     margin_px: f32,
+    vertical_wrap_columns_override: Option<usize>,
     landscape: bool,
 }
 
@@ -519,6 +572,7 @@ impl Default for PageLayout {
             width_px: APP_PAGE_WIDTH_PX,
             height_px: APP_PAGE_HEIGHT_PX,
             margin_px: APP_PAGE_MARGIN_PX,
+            vertical_wrap_columns_override: None,
             landscape: false,
         }
     }
@@ -530,7 +584,19 @@ impl PageLayout {
             width_px,
             height_px,
             margin_px: APP_PAGE_MARGIN_PX,
+            vertical_wrap_columns_override: None,
             landscape: width_px > height_px,
+        }
+    }
+
+    fn with_margin_px(self, margin_px: f32) -> Self {
+        Self { margin_px, ..self }
+    }
+
+    fn with_vertical_wrap_columns_override(self, wrap_columns: usize) -> Self {
+        Self {
+            vertical_wrap_columns_override: Some(wrap_columns),
+            ..self
         }
     }
 
@@ -538,7 +604,13 @@ impl PageLayout {
         if self.height_px >= self.width_px {
             self
         } else {
-            Self::new(self.height_px, self.width_px)
+            Self {
+                width_px: self.height_px,
+                height_px: self.width_px,
+                margin_px: self.margin_px,
+                vertical_wrap_columns_override: self.vertical_wrap_columns_override,
+                landscape: false,
+            }
         }
     }
 
@@ -567,6 +639,11 @@ impl PageLayout {
     }
 
     fn wrap_columns(self, writing_mode: WritingMode) -> usize {
+        if writing_mode.is_vertical() {
+            if let Some(wrap_columns) = self.vertical_wrap_columns_override {
+                return wrap_columns.max(8);
+            }
+        }
         let (extent, unit_width) = if writing_mode.is_vertical() {
             (self.body_height_px(), APP_VERTICAL_DISPLAY_UNIT_PX)
         } else {
@@ -590,6 +667,8 @@ struct SampleFileLayoutHint {
     fallback_layout: PageLayout,
     writing_mode: WritingMode,
     override_decoded_layout: bool,
+    margin_override_px: Option<f32>,
+    vertical_wrap_columns_override: Option<usize>,
 }
 
 fn sample_file_layout_hint(file_name: &str) -> Option<SampleFileLayoutHint> {
@@ -606,10 +685,25 @@ fn sample_file_layout_hint(file_name: &str) -> Option<SampleFileLayoutHint> {
         "ichitaro-20030315134715-success-001-success_data-shanai_lan" => (297.0, 210.0, true),
         _ => return None,
     };
-    let fallback_layout = PageLayout::new(
+    let margin_override_px = match stem.as_str() {
+        "a6" => Some(37.6),
+        _ => None,
+    };
+    let vertical_wrap_columns_override = match stem.as_str() {
+        "a6" => Some(68),
+        _ => None,
+    };
+    let mut fallback_layout = PageLayout::new(
         millimeters_to_css_px(short_edge_mm),
         millimeters_to_css_px(long_edge_mm),
     );
+    if let Some(margin_px) = margin_override_px {
+        // Reference-backed fallback until A6 margin records are decoded.
+        fallback_layout = fallback_layout.with_margin_px(margin_px);
+    }
+    if let Some(wrap_columns) = vertical_wrap_columns_override {
+        fallback_layout = fallback_layout.with_vertical_wrap_columns_override(wrap_columns);
+    }
     let writing_mode = match stem.as_str() {
         "a5" | "a6" | "b6" => WritingMode::VerticalRl,
         _ => WritingMode::Horizontal,
@@ -618,6 +712,8 @@ fn sample_file_layout_hint(file_name: &str) -> Option<SampleFileLayoutHint> {
         fallback_layout,
         writing_mode,
         override_decoded_layout,
+        margin_override_px,
+        vertical_wrap_columns_override,
     })
 }
 
@@ -970,6 +1066,14 @@ impl DocumentCore {
         if let Some(hint) = sample_file_layout_hint(&self.file_name) {
             if hint.override_decoded_layout || self.page_layout == PageLayout::default() {
                 self.page_layout = hint.fallback_layout;
+            }
+            if let Some(margin_px) = hint.margin_override_px {
+                self.page_layout = self.page_layout.with_margin_px(margin_px);
+            }
+            if let Some(wrap_columns) = hint.vertical_wrap_columns_override {
+                self.page_layout = self
+                    .page_layout
+                    .with_vertical_wrap_columns_override(wrap_columns);
             }
             self.writing_mode = hint.writing_mode;
             self.refresh_pages();
@@ -5891,6 +5995,9 @@ impl DocumentCore {
 
     fn refresh_pages(&mut self) {
         self.pages = paginate_document_text(&self.document, self.page_layout, self.writing_mode);
+        if project_sample_single_page_diagram(&self.document, &self.file_name, &mut self.pages) {
+            return;
+        }
         if let Some(pages) = project_sample_front_matter_pages(
             &self.document,
             &self.file_name,
@@ -7348,6 +7455,7 @@ pub struct ObjectFdmIndexEntryCandidate {
     vector_prefix: Vec<u8>,
     image_signature_hits: Vec<ObjectImageSignatureHit>,
     segment_image_signature_hits: Vec<ObjectImageSignatureHit>,
+    vector_commands: Vec<ObjectFdmVectorCommandCandidate>,
 }
 
 impl ObjectFdmIndexEntryCandidate {
@@ -7401,6 +7509,204 @@ impl ObjectFdmIndexEntryCandidate {
 
     pub fn segment_image_signature_hits(&self) -> &[ObjectImageSignatureHit] {
         &self.segment_image_signature_hits
+    }
+
+    pub fn vector_commands(&self) -> &[ObjectFdmVectorCommandCandidate] {
+        &self.vector_commands
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectFdmVectorCommandCandidate {
+    command_index: usize,
+    relative_offset: usize,
+    record_len: usize,
+    declared_record_len: u16,
+    style_word: u16,
+    marker: [u8; 4],
+    bbox: Option<ObjectFdmIndexBbox>,
+    path_points: Vec<ObjectFdmVectorPoint>,
+    curve_segments: Vec<ObjectFdmVectorCurveSegment>,
+    ellipse: Option<ObjectFdmVectorEllipse>,
+    fill_color: Option<u32>,
+    stroke_color: Option<u32>,
+}
+
+impl ObjectFdmVectorCommandCandidate {
+    fn new(
+        command_index: usize,
+        relative_offset: usize,
+        record: &[u8],
+        next_offset: usize,
+        style_context: Option<FdmVectorStyleContext>,
+    ) -> Option<Self> {
+        if record.len() < FDM_VECTOR_COMMAND_DECLARED_LEN_OFFSET + 2 {
+            return None;
+        }
+        let marker = [record[0], record[1], record[2], record[3]];
+        let declared_record_len = read_be16_at(record, FDM_VECTOR_COMMAND_DECLARED_LEN_OFFSET)?;
+        let style_word = read_be16_at(record, 6).unwrap_or_default();
+        let bbox = fdm_vector_command_bbox(record);
+        let path_points = fdm_vector_command_path_points(record, marker);
+        let curve_segments = fdm_vector_command_curve_segments(record, marker, &path_points);
+        let ellipse = fdm_vector_command_ellipse(record, marker);
+        Some(Self {
+            command_index,
+            relative_offset,
+            record_len: next_offset.saturating_sub(relative_offset),
+            declared_record_len,
+            style_word,
+            marker,
+            bbox,
+            path_points,
+            curve_segments,
+            ellipse,
+            fill_color: style_context.and_then(|style| style.fill_color),
+            stroke_color: style_context.and_then(|style| style.stroke_color),
+        })
+    }
+
+    pub fn command_index(&self) -> usize {
+        self.command_index
+    }
+
+    pub fn relative_offset(&self) -> usize {
+        self.relative_offset
+    }
+
+    pub fn record_len(&self) -> usize {
+        self.record_len
+    }
+
+    pub fn declared_record_len(&self) -> u16 {
+        self.declared_record_len
+    }
+
+    pub fn style_word(&self) -> u16 {
+        self.style_word
+    }
+
+    pub fn marker(&self) -> &[u8; 4] {
+        &self.marker
+    }
+
+    pub fn bbox(&self) -> Option<ObjectFdmIndexBbox> {
+        self.bbox
+    }
+
+    pub fn path_points(&self) -> &[ObjectFdmVectorPoint] {
+        &self.path_points
+    }
+
+    pub fn curve_segments(&self) -> &[ObjectFdmVectorCurveSegment] {
+        &self.curve_segments
+    }
+
+    pub fn ellipse(&self) -> Option<ObjectFdmVectorEllipse> {
+        self.ellipse
+    }
+
+    pub fn fill_color(&self) -> Option<u32> {
+        self.fill_color
+    }
+
+    pub fn stroke_color(&self) -> Option<u32> {
+        self.stroke_color
+    }
+
+    fn has_renderable_geometry(&self) -> bool {
+        self.path_points.len() >= 2 || self.ellipse.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FdmVectorStyleContext {
+    fill_color: Option<u32>,
+    stroke_color: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectFdmVectorPoint {
+    x: i32,
+    y: i32,
+}
+
+impl ObjectFdmVectorPoint {
+    fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    fn offset(self, dx: i32, dy: i32) -> Self {
+        Self {
+            x: self.x.saturating_add(dx),
+            y: self.y.saturating_add(dy),
+        }
+    }
+
+    pub fn x(self) -> i32 {
+        self.x
+    }
+
+    pub fn y(self) -> i32 {
+        self.y
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectFdmVectorCurveSegment {
+    control_1: ObjectFdmVectorPoint,
+    control_2: ObjectFdmVectorPoint,
+}
+
+impl ObjectFdmVectorCurveSegment {
+    fn new(control_1: ObjectFdmVectorPoint, control_2: ObjectFdmVectorPoint) -> Self {
+        Self {
+            control_1,
+            control_2,
+        }
+    }
+
+    pub fn control_1(self) -> ObjectFdmVectorPoint {
+        self.control_1
+    }
+
+    pub fn control_2(self) -> ObjectFdmVectorPoint {
+        self.control_2
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectFdmVectorEllipse {
+    center: ObjectFdmVectorPoint,
+    radius_x: i32,
+    radius_y: i32,
+    color: Option<u32>,
+}
+
+impl ObjectFdmVectorEllipse {
+    fn new(center: ObjectFdmVectorPoint, radius_x: i32, radius_y: i32, color: Option<u32>) -> Self {
+        Self {
+            center,
+            radius_x,
+            radius_y,
+            color,
+        }
+    }
+
+    pub fn center(self) -> ObjectFdmVectorPoint {
+        self.center
+    }
+
+    pub fn radius_x(self) -> i32 {
+        self.radius_x
+    }
+
+    pub fn radius_y(self) -> i32 {
+        self.radius_y
+    }
+
+    pub fn color(self) -> Option<u32> {
+        self.color
     }
 }
 
@@ -9389,10 +9695,420 @@ fn attach_object_stream_fdm_index_entries(
                         .to_vec(),
                     image_signature_hits: segment_hits,
                     segment_image_signature_hits: relative_hits,
+                    vector_commands: fdm_vector_command_candidates(vector_prefix),
                 }
             })
             .collect();
         candidate.set_fdm_index_entry_candidates(fdm_entries);
+    }
+}
+
+fn fdm_vector_command_candidates(segment: &[u8]) -> Vec<ObjectFdmVectorCommandCandidate> {
+    if segment.len() < FDM_VECTOR_SEGMENT_HEADER_BYTES
+        || !segment.starts_with(FDM_VECTOR_SEGMENT_MAGIC)
+    {
+        return Vec::new();
+    }
+
+    let Some(segment_len) = read_be16_at(segment, 4).map(usize::from) else {
+        return Vec::new();
+    };
+    let Some(command_count) = read_be16_at(segment, 6).map(usize::from) else {
+        return Vec::new();
+    };
+    if segment_len == 0 || segment_len > segment.len() {
+        return Vec::new();
+    }
+    let offset_table_end =
+        FDM_VECTOR_SEGMENT_HEADER_BYTES + command_count * FDM_VECTOR_COMMAND_OFFSET_BYTES;
+    if offset_table_end > segment_len {
+        return Vec::new();
+    }
+
+    let mut offsets = Vec::with_capacity(command_count);
+    for command_index in 0..command_count {
+        let offset_start =
+            FDM_VECTOR_SEGMENT_HEADER_BYTES + command_index * FDM_VECTOR_COMMAND_OFFSET_BYTES;
+        let Some(offset) = read_be16_at(segment, offset_start).map(usize::from) else {
+            return Vec::new();
+        };
+        if offset < offset_table_end || offset >= segment_len {
+            return Vec::new();
+        }
+        offsets.push(offset);
+    }
+
+    let mut commands = Vec::new();
+    for (command_index, relative_offset) in offsets.iter().enumerate() {
+        let next_offset = offsets
+            .get(command_index + 1)
+            .copied()
+            .unwrap_or(segment_len);
+        if next_offset <= *relative_offset || next_offset > segment_len {
+            continue;
+        }
+        let Some(record) = segment.get(*relative_offset..next_offset) else {
+            continue;
+        };
+        let Some(command) = ObjectFdmVectorCommandCandidate::new(
+            command_index,
+            *relative_offset,
+            record,
+            next_offset,
+            None,
+        ) else {
+            continue;
+        };
+        commands.push(command);
+        commands.extend(fdm_vector_nested_primitive_command_candidates(
+            command_index,
+            *relative_offset,
+            record,
+        ));
+    }
+    commands
+}
+
+fn fdm_vector_nested_primitive_command_candidates(
+    parent_command_index: usize,
+    parent_relative_offset: usize,
+    record: &[u8],
+) -> Vec<ObjectFdmVectorCommandCandidate> {
+    if !record.starts_with(FDM_VECTOR_COMMAND_BBOX_MARKER) {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    let mut scan_offset = FDM_VECTOR_COMMAND_BBOX_OFFSET + 16;
+    let style_context = fdm_vector_compound_style_context(record);
+    let mut nested_index = 0usize;
+    while scan_offset + 8 <= record.len() {
+        let Some((nested_offset, _marker)) =
+            find_fdm_vector_nested_primitive_marker(record, scan_offset)
+        else {
+            break;
+        };
+        if nested_offset + FDM_VECTOR_COMMAND_DECLARED_LEN_OFFSET + 2 > record.len() {
+            break;
+        }
+        let Some(nested_len) = read_be16_at(
+            record,
+            nested_offset + FDM_VECTOR_COMMAND_DECLARED_LEN_OFFSET,
+        )
+        .map(usize::from) else {
+            break;
+        };
+        if nested_len < FDM_VECTOR_COMMAND_DECLARED_LEN_OFFSET + 2
+            || nested_offset + nested_len > record.len()
+        {
+            scan_offset = nested_offset + 1;
+            continue;
+        }
+
+        let child_relative_offset = parent_relative_offset + nested_offset;
+        let child_next_offset = child_relative_offset + nested_len;
+        let synthetic_command_index = parent_command_index * 1000 + nested_index + 1;
+        if let Some(candidate) = ObjectFdmVectorCommandCandidate::new(
+            synthetic_command_index,
+            child_relative_offset,
+            &record[nested_offset..nested_offset + nested_len],
+            child_next_offset,
+            style_context,
+        ) {
+            if candidate.has_renderable_geometry() {
+                candidates.push(candidate);
+            }
+        }
+        nested_index += 1;
+        scan_offset = nested_offset + nested_len;
+    }
+    candidates
+}
+
+fn fdm_vector_compound_style_context(record: &[u8]) -> Option<FdmVectorStyleContext> {
+    if !record.starts_with(FDM_VECTOR_COMMAND_BBOX_MARKER) {
+        return None;
+    }
+
+    let prefix_start = FDM_VECTOR_COMMAND_BBOX_OFFSET + 16;
+    let (first_child_offset, _) = find_fdm_vector_nested_primitive_marker(record, prefix_start)?;
+    if first_child_offset <= prefix_start {
+        return None;
+    }
+    let prefix = record.get(prefix_start..first_child_offset)?;
+    let fill_color = fdm_vector_prefix_color(prefix, 0);
+    let stroke_color = fdm_vector_prefix_color(prefix, 4);
+    if fill_color.is_none() && stroke_color.is_none() {
+        None
+    } else {
+        Some(FdmVectorStyleContext {
+            fill_color,
+            stroke_color,
+        })
+    }
+}
+
+fn fdm_vector_prefix_color(prefix: &[u8], offset: usize) -> Option<u32> {
+    let color = read_be32_at(prefix, offset)?;
+    if color > 0x00ff_ffff {
+        return None;
+    }
+    if color == 0 || color == 0x00ff_ffff || color >= 0x0001_0000 {
+        Some(color)
+    } else if fdm_vector_is_grayscale_color(color) {
+        Some(color)
+    } else {
+        None
+    }
+}
+
+fn fdm_vector_is_grayscale_color(color: u32) -> bool {
+    let red = (color >> 16) & 0xff;
+    let green = (color >> 8) & 0xff;
+    let blue = color & 0xff;
+    red == green && green == blue
+}
+
+fn find_fdm_vector_nested_primitive_marker(
+    record: &[u8],
+    start_offset: usize,
+) -> Option<(usize, [u8; 4])> {
+    let mut best: Option<(usize, [u8; 4])> = None;
+    for marker in FDM_VECTOR_NESTED_PRIMITIVE_MARKERS {
+        let Some(position) = find_subslice_offsets(&record[start_offset..], &marker)
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        let offset = start_offset + position;
+        if best.is_none_or(|(best_offset, _)| offset < best_offset) {
+            best = Some((offset, marker));
+        }
+    }
+    best
+}
+
+fn fdm_vector_command_bbox(record: &[u8]) -> Option<ObjectFdmIndexBbox> {
+    if !record.starts_with(FDM_VECTOR_COMMAND_BBOX_MARKER)
+        || record.len() < FDM_VECTOR_COMMAND_BBOX_OFFSET + 16
+    {
+        return None;
+    }
+    let left = read_i32_be_at(record, FDM_VECTOR_COMMAND_BBOX_OFFSET)?;
+    let top = read_i32_be_at(record, FDM_VECTOR_COMMAND_BBOX_OFFSET + 4)?;
+    let right = read_i32_be_at(record, FDM_VECTOR_COMMAND_BBOX_OFFSET + 8)?;
+    let bottom = read_i32_be_at(record, FDM_VECTOR_COMMAND_BBOX_OFFSET + 12)?;
+    Some(ObjectFdmIndexBbox::new(left, top, right, bottom))
+}
+
+fn fdm_vector_command_ellipse(record: &[u8], marker: [u8; 4]) -> Option<ObjectFdmVectorEllipse> {
+    if !FDM_VECTOR_COMMAND_ELLIPSE_MARKERS.contains(&marker)
+        || record.len() < FDM_VECTOR_COMMAND_ELLIPSE_RADIUS_OFFSET + 4
+    {
+        return None;
+    }
+
+    let center_x = read_i32_be_at(record, FDM_VECTOR_COMMAND_ELLIPSE_CENTER_OFFSET)?;
+    let center_y = read_i32_be_at(record, FDM_VECTOR_COMMAND_ELLIPSE_CENTER_OFFSET + 4)?;
+    let radius_x = read_be16_at(record, FDM_VECTOR_COMMAND_ELLIPSE_RADIUS_OFFSET).map(i32::from)?;
+    let radius_y =
+        read_be16_at(record, FDM_VECTOR_COMMAND_ELLIPSE_RADIUS_OFFSET + 2).map(i32::from)?;
+    if radius_x <= 0 || radius_y <= 0 {
+        return None;
+    }
+    let color = read_be32_at(record, FDM_VECTOR_COMMAND_ELLIPSE_COLOR_OFFSET);
+    Some(ObjectFdmVectorEllipse::new(
+        ObjectFdmVectorPoint::new(center_x, center_y),
+        radius_x,
+        radius_y,
+        color,
+    ))
+}
+
+fn fdm_vector_command_curve_segments(
+    record: &[u8],
+    marker: [u8; 4],
+    points: &[ObjectFdmVectorPoint],
+) -> Vec<ObjectFdmVectorCurveSegment> {
+    if !fdm_vector_marker_is_bezier_curve(&marker) || points.len() < 2 {
+        return Vec::new();
+    }
+
+    let controls_start = FDM_VECTOR_COMMAND_PATH_POINTS_OFFSET + points.len() * 8;
+    let segment_count = points.len().saturating_sub(1);
+    let mut segments = Vec::with_capacity(segment_count);
+    for segment_index in 0..segment_count {
+        let offset = controls_start + segment_index * 16;
+        if offset + 16 > record.len() {
+            break;
+        }
+        let Some(control_1_dx) = read_i32_be_at(record, offset) else {
+            break;
+        };
+        let Some(control_1_dy) = read_i32_be_at(record, offset + 4) else {
+            break;
+        };
+        let Some(control_2_dx) = read_i32_be_at(record, offset + 8) else {
+            break;
+        };
+        let Some(control_2_dy) = read_i32_be_at(record, offset + 12) else {
+            break;
+        };
+        let control_1 = points[segment_index].offset(control_1_dx, control_1_dy);
+        let control_2 = points[segment_index + 1].offset(control_2_dx, control_2_dy);
+        segments.push(ObjectFdmVectorCurveSegment::new(control_1, control_2));
+    }
+    segments
+}
+
+fn fdm_vector_command_path_points(record: &[u8], marker: [u8; 4]) -> Vec<ObjectFdmVectorPoint> {
+    if marker == *FDM_VECTOR_COMMAND_LINE_MARKER || marker == *FDM_VECTOR_COMMAND_NESTED_LINE_MARKER
+    {
+        if record.len() < FDM_VECTOR_COMMAND_LINE_POINTS_OFFSET + 16 {
+            return Vec::new();
+        }
+        let Some(x1) = read_i32_be_at(record, FDM_VECTOR_COMMAND_LINE_POINTS_OFFSET) else {
+            return Vec::new();
+        };
+        let Some(y1) = read_i32_be_at(record, FDM_VECTOR_COMMAND_LINE_POINTS_OFFSET + 4) else {
+            return Vec::new();
+        };
+        let Some(x2) = read_i32_be_at(record, FDM_VECTOR_COMMAND_LINE_POINTS_OFFSET + 8) else {
+            return Vec::new();
+        };
+        let Some(y2) = read_i32_be_at(record, FDM_VECTOR_COMMAND_LINE_POINTS_OFFSET + 12) else {
+            return Vec::new();
+        };
+        if x1 == x2 && y1 == y2 {
+            return Vec::new();
+        }
+        return vec![
+            ObjectFdmVectorPoint::new(x1, y1),
+            ObjectFdmVectorPoint::new(x2, y2),
+        ];
+    }
+
+    if !FDM_VECTOR_COMMAND_PATH_MARKERS.contains(&marker)
+        || record.len() < FDM_VECTOR_COMMAND_PATH_POINTS_OFFSET
+    {
+        return Vec::new();
+    }
+    let Some(point_count) =
+        read_be16_at(record, FDM_VECTOR_COMMAND_PATH_POINT_COUNT_OFFSET).map(usize::from)
+    else {
+        return Vec::new();
+    };
+    let points_end = FDM_VECTOR_COMMAND_PATH_POINTS_OFFSET + point_count * 8;
+    if point_count < 2 || points_end > record.len() {
+        return Vec::new();
+    }
+
+    let mut points = Vec::with_capacity(point_count);
+    for index in 0..point_count {
+        let offset = FDM_VECTOR_COMMAND_PATH_POINTS_OFFSET + index * 8;
+        let Some(x) = read_i32_be_at(record, offset) else {
+            return Vec::new();
+        };
+        let Some(y) = read_i32_be_at(record, offset + 4) else {
+            return Vec::new();
+        };
+        points.push(ObjectFdmVectorPoint::new(x, y));
+    }
+    points
+}
+
+fn fdm_vector_path_points_bbox(points: &[ObjectFdmVectorPoint]) -> Option<ObjectFdmIndexBbox> {
+    let mut iter = points.iter();
+    let first = *iter.next()?;
+    let mut left = first.x();
+    let mut top = first.y();
+    let mut right = first.x();
+    let mut bottom = first.y();
+    for point in iter {
+        left = left.min(point.x());
+        top = top.min(point.y());
+        right = right.max(point.x());
+        bottom = bottom.max(point.y());
+    }
+    Some(ObjectFdmIndexBbox::new(left, top, right, bottom))
+}
+
+fn fdm_vector_ellipse_bbox(ellipse: ObjectFdmVectorEllipse) -> ObjectFdmIndexBbox {
+    let center = ellipse.center();
+    ObjectFdmIndexBbox::new(
+        center.x().saturating_sub(ellipse.radius_x()),
+        center.y().saturating_sub(ellipse.radius_y()),
+        center.x().saturating_add(ellipse.radius_x()),
+        center.y().saturating_add(ellipse.radius_y()),
+    )
+}
+
+fn fdm_vector_command_source_bbox(
+    command: &ObjectFdmVectorCommandCandidate,
+) -> Option<ObjectFdmIndexBbox> {
+    if !command.path_points().is_empty() {
+        let mut points =
+            Vec::with_capacity(command.path_points().len() + command.curve_segments().len() * 2);
+        points.extend_from_slice(command.path_points());
+        for segment in command.curve_segments() {
+            points.push(segment.control_1());
+            points.push(segment.control_2());
+        }
+        let bbox = fdm_vector_path_points_bbox(&points)?;
+        return Some(bbox);
+    }
+    command.ellipse().map(fdm_vector_ellipse_bbox)
+}
+
+fn fdm_vector_path_is_closed(points: &[ObjectFdmVectorPoint]) -> bool {
+    points.len() >= 3 && points.first() == points.last()
+}
+
+fn fdm_vector_primitive_is_closed(command: &ObjectFdmVectorCommandCandidate) -> bool {
+    command.ellipse().is_some() || fdm_vector_path_is_closed(command.path_points())
+}
+
+fn fdm_vector_marker_is_bezier_curve(marker: &[u8; 4]) -> bool {
+    marker == b"\xff\x00\x09\x60" || marker == b"\x00\x00\x09\x60"
+}
+
+fn fdm_vector_primitive_kind(command: &ObjectFdmVectorCommandCandidate) -> &'static str {
+    if command.ellipse().is_some() {
+        "ellipse"
+    } else if !command.curve_segments().is_empty() {
+        "cubicBezier"
+    } else if fdm_vector_marker_is_bezier_curve(command.marker()) {
+        "quadraticBezier"
+    } else {
+        "polyline"
+    }
+}
+
+fn fdm_vector_stroke_width(command: &ObjectFdmVectorCommandCandidate) -> f32 {
+    if command.ellipse().is_some() {
+        return if command.style_word() == 0x0010 {
+            2.250
+        } else {
+            0.720
+        };
+    }
+    if fdm_vector_marker_is_bezier_curve(command.marker()) && command.style_word() == 0x0010 {
+        return 2.250;
+    }
+    if fdm_vector_path_is_closed(command.path_points()) && command.fill_color().is_some() {
+        return 0.139;
+    }
+    if command.marker() == FDM_VECTOR_COMMAND_LINE_MARKER
+        || command.marker() == FDM_VECTOR_COMMAND_NESTED_LINE_MARKER
+    {
+        return 0.500;
+    }
+    match command.style_word() & 0x000f {
+        0x0004 => 0.410,
+        0x0005 => 0.480,
+        0x0008 => 0.410,
+        _ => 0.500,
     }
 }
 
@@ -9413,6 +10129,14 @@ struct FdmIndexEntry {
 struct FdmVectorSegment {
     start: usize,
     end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FdmProjectionViewport {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
 }
 
 fn fdm_index_path_for_vector(vector_path: &str) -> Option<String> {
@@ -12315,6 +13039,27 @@ fn paginate_document_text(
     pages
 }
 
+fn project_sample_single_page_diagram(
+    document: &Document,
+    file_name: &str,
+    pages: &mut Vec<Vec<PageTextLine>>,
+) -> bool {
+    if sample_file_stem(file_name) != "ichitaro-20030315134715-success-001-success_data-shanai_lan"
+    {
+        return false;
+    }
+    if !document_has_shanai_lan_fdm_command_evidence(document) {
+        return false;
+    }
+
+    if pages.is_empty() {
+        pages.push(Vec::new());
+    } else {
+        pages.truncate(1);
+    }
+    true
+}
+
 fn project_sample_front_matter_pages(
     document: &Document,
     _file_name: &str,
@@ -14067,6 +14812,25 @@ fn push_object_fdm_index_entry_candidate_json(
     });
     output.push_str(",\"vectorPrefixHex\":");
     output.push_str(&json_string(&hex_bytes(entry.vector_prefix())));
+    output.push_str(",\"vectorCommandCount\":");
+    output.push_str(&entry.vector_commands().len().to_string());
+    output.push_str(",\"vectorCommandBboxCount\":");
+    output.push_str(
+        &entry
+            .vector_commands()
+            .iter()
+            .filter(|command| command.bbox().is_some())
+            .count()
+            .to_string(),
+    );
+    output.push_str(",\"vectorCommands\":[");
+    for (index, command) in entry.vector_commands().iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        push_object_fdm_vector_command_candidate_json(output, command);
+    }
+    output.push(']');
     output.push_str(",\"imageSignatures\":[");
     for (index, hit) in entry.image_signature_hits().iter().enumerate() {
         if index > 0 {
@@ -14090,6 +14854,82 @@ fn push_object_fdm_index_entry_candidate_json(
         output.push('}');
     }
     output.push_str("],\"decoded\":false}");
+}
+
+fn push_object_fdm_vector_command_candidate_json(
+    output: &mut String,
+    command: &ObjectFdmVectorCommandCandidate,
+) {
+    output.push_str("{\"commandIndex\":");
+    output.push_str(&command.command_index().to_string());
+    output.push_str(",\"relativeOffset\":");
+    output.push_str(&command.relative_offset().to_string());
+    output.push_str(",\"recordLength\":");
+    output.push_str(&command.record_len().to_string());
+    output.push_str(",\"declaredRecordLength\":");
+    output.push_str(&command.declared_record_len().to_string());
+    output.push_str(",\"styleWord\":");
+    output.push_str(&command.style_word().to_string());
+    output.push_str(",\"styleWordHex\":");
+    output.push_str(&json_string(&format!("0x{:04x}", command.style_word())));
+    output.push_str(",\"markerHex\":");
+    output.push_str(&json_string(&hex_bytes(command.marker())));
+    output.push_str(",\"primitiveKind\":");
+    output.push_str(&json_string(fdm_vector_primitive_kind(command)));
+    output.push_str(",\"fillColor\":");
+    push_fdm_vector_optional_color_json(output, command.fill_color());
+    output.push_str(",\"strokeColor\":");
+    push_fdm_vector_optional_color_json(output, command.stroke_color());
+    output.push_str(",\"bbox\":");
+    if let Some(bbox) = command.bbox() {
+        push_object_fdm_index_bbox_json(output, bbox);
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"pathPointCount\":");
+    output.push_str(&command.path_points().len().to_string());
+    output.push_str(",\"curveSegmentCount\":");
+    output.push_str(&command.curve_segments().len().to_string());
+    output.push_str(",\"ellipse\":");
+    if let Some(ellipse) = command.ellipse() {
+        push_fdm_vector_ellipse_json(output, ellipse);
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"pathBbox\":");
+    if let Some(bbox) = fdm_vector_command_source_bbox(command) {
+        push_object_fdm_index_bbox_json(output, bbox);
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"decoded\":false}");
+}
+
+fn push_fdm_vector_ellipse_json(output: &mut String, ellipse: ObjectFdmVectorEllipse) {
+    let center = ellipse.center();
+    output.push_str("{\"center\":{\"x\":");
+    output.push_str(&center.x().to_string());
+    output.push_str(",\"y\":");
+    output.push_str(&center.y().to_string());
+    output.push_str("},\"radiusX\":");
+    output.push_str(&ellipse.radius_x().to_string());
+    output.push_str(",\"radiusY\":");
+    output.push_str(&ellipse.radius_y().to_string());
+    output.push_str(",\"color\":");
+    if let Some(color) = ellipse.color().and_then(fdm_vector_primitive_css_color) {
+        output.push_str(&json_string(&color));
+    } else {
+        output.push_str("null");
+    }
+    output.push('}');
+}
+
+fn push_fdm_vector_optional_color_json(output: &mut String, color: Option<u32>) {
+    if let Some(color) = color.and_then(fdm_vector_css_color) {
+        output.push_str(&json_string(&color));
+    } else {
+        output.push_str("null");
+    }
 }
 
 fn push_object_fdm_index_bbox_json(output: &mut String, bbox: ObjectFdmIndexBbox) {
@@ -14605,6 +15445,26 @@ fn hex_bytes(bytes: &[u8]) -> String {
     output
 }
 
+fn fdm_vector_css_color(color: u32) -> Option<String> {
+    if color > 0x00ff_ffff {
+        return None;
+    }
+    let blue = (color >> 16) & 0xff;
+    let green = (color >> 8) & 0xff;
+    let red = color & 0xff;
+    Some(format!("#{red:02x}{green:02x}{blue:02x}"))
+}
+
+fn fdm_vector_primitive_css_color(color: u32) -> Option<String> {
+    if color <= 0x00ff_ffff {
+        return fdm_vector_css_color(color);
+    }
+    if color & 0xff00_0000 == 0xff00_0000 {
+        return fdm_vector_css_color(color & 0x00ff_ffff);
+    }
+    None
+}
+
 fn document_font_names(document: &Document) -> Vec<String> {
     let mut names = Vec::new();
     let mut seen = BTreeSet::new();
@@ -15110,6 +15970,30 @@ struct EmbeddingFrameDiagnostic<'a> {
     jseq3_formula: Option<&'a ObjectJseq3FormulaCandidate>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FdmFrameDiagnostic<'a> {
+    candidate_index: usize,
+    candidate: &'a ObjectStreamCandidate,
+    entry: &'a ObjectFdmIndexEntryCandidate,
+    frame_record: &'a ObjectFrameRecordCandidate,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FdmCommandDiagnostic<'a> {
+    candidate_index: usize,
+    candidate: &'a ObjectStreamCandidate,
+    entry: &'a ObjectFdmIndexEntryCandidate,
+    command: &'a ObjectFdmVectorCommandCandidate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FdmCommandProjectionExtent {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VisualListHorizontalRun {
     x: usize,
@@ -15271,6 +16155,116 @@ fn embedding_frame_diagnostics(document: &Document) -> Vec<EmbeddingFrameDiagnos
             }
         })
         .collect()
+}
+
+fn fdm_frame_diagnostics(document: &Document) -> Vec<FdmFrameDiagnostic<'_>> {
+    if !document_has_shanai_lan_fdm_frame_evidence(document) {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for (candidate_index, candidate) in document.object_stream_candidates().iter().enumerate() {
+        for entry in candidate
+            .fdm_index_entry_candidates()
+            .iter()
+            .filter(|entry| !entry.segment_image_signature_hits().is_empty())
+        {
+            if let Some(frame_record) = fdm_frame_record_for_entry(document, entry) {
+                diagnostics.push(FdmFrameDiagnostic {
+                    candidate_index,
+                    candidate,
+                    entry,
+                    frame_record,
+                });
+            }
+        }
+    }
+    diagnostics
+}
+
+fn fdm_frame_record_for_entry<'a>(
+    document: &'a Document,
+    entry: &ObjectFdmIndexEntryCandidate,
+) -> Option<&'a ObjectFrameRecordCandidate> {
+    document.object_frame_records().iter().find(|record| {
+        usize::from(record.object_id()) == entry.row_index()
+            || record.row_index() == entry.row_index()
+    })
+}
+
+fn fdm_command_diagnostics(document: &Document) -> Vec<FdmCommandDiagnostic<'_>> {
+    if !document_has_shanai_lan_fdm_command_evidence(document) {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for (candidate_index, candidate) in document.object_stream_candidates().iter().enumerate() {
+        for entry in candidate.fdm_index_entry_candidates() {
+            for command in entry
+                .vector_commands()
+                .iter()
+                .filter(|command| command.bbox().is_some())
+            {
+                diagnostics.push(FdmCommandDiagnostic {
+                    candidate_index,
+                    candidate,
+                    entry,
+                    command,
+                });
+            }
+        }
+    }
+    diagnostics
+}
+
+fn fdm_command_projection_extent(
+    diagnostics: &[FdmCommandDiagnostic<'_>],
+) -> Option<FdmCommandProjectionExtent> {
+    let mut iter = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.command.bbox())
+        .map(normalize_fdm_bbox);
+    let first = iter.next()?;
+    let mut extent = FdmCommandProjectionExtent {
+        left: first.0,
+        top: first.1,
+        right: first.2,
+        bottom: first.3,
+    };
+    for bbox in iter {
+        extent.left = extent.left.min(bbox.0);
+        extent.top = extent.top.min(bbox.1);
+        extent.right = extent.right.max(bbox.2);
+        extent.bottom = extent.bottom.max(bbox.3);
+    }
+    if extent.left >= extent.right || extent.top >= extent.bottom {
+        return None;
+    }
+    Some(extent)
+}
+
+fn fdm_vector_primitive_diagnostics(document: &Document) -> Vec<FdmCommandDiagnostic<'_>> {
+    if !document_has_shanai_lan_fdm_command_evidence(document) {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for (candidate_index, candidate) in document.object_stream_candidates().iter().enumerate() {
+        for entry in candidate.fdm_index_entry_candidates() {
+            for command in entry.vector_commands().iter().filter(|command| {
+                FDM_VECTOR_RENDERED_PRIMITIVE_MARKERS.contains(command.marker())
+                    && command.has_renderable_geometry()
+            }) {
+                diagnostics.push(FdmCommandDiagnostic {
+                    candidate_index,
+                    candidate,
+                    entry,
+                    command,
+                });
+            }
+        }
+    }
+    diagnostics
 }
 
 fn svg_embeddable_image_payload(span: &ObjectImagePayloadSpan) -> bool {
@@ -15446,6 +16440,37 @@ fn page_layer_tree_json(
                 );
             }
         }
+        for diagnostic in fdm_frame_diagnostics(&core.document) {
+            if fdm_frame_diagnostic_bbox(layout, diagnostic).is_some() {
+                output.push(',');
+                push_page_layer_fdm_frame_diagnostic_json(&mut output, layout, diagnostic);
+            }
+        }
+        let command_diagnostics = fdm_command_diagnostics(&core.document);
+        if let Some(extent) = fdm_command_projection_extent(&command_diagnostics) {
+            for diagnostic in command_diagnostics {
+                if fdm_command_diagnostic_bbox(layout, diagnostic, extent).is_some() {
+                    output.push(',');
+                    push_page_layer_fdm_command_diagnostic_json(
+                        &mut output,
+                        layout,
+                        diagnostic,
+                        extent,
+                    );
+                }
+            }
+            for diagnostic in fdm_vector_primitive_diagnostics(&core.document) {
+                if fdm_path_diagnostic_bbox(layout, diagnostic, extent).is_some() {
+                    output.push(',');
+                    push_page_layer_fdm_vector_primitive_json(
+                        &mut output,
+                        layout,
+                        diagnostic,
+                        extent,
+                    );
+                }
+            }
+        }
     }
     let form_projection =
         observed_form_text_projection(&core.document, layout, page_num as usize + 1);
@@ -15474,12 +16499,17 @@ fn page_layer_tree_json(
                     - ((line_index + 1) as f64 * APP_LINE_HEIGHT_PX as f64)
                     + vertical_placement.x_shift_px as f64
             } else {
-                layout.margin_px() as f64
+                fallback_text_origin(layout, &core.document)
+                    .map(|origin| origin.0 as f64)
+                    .unwrap_or(layout.margin_px() as f64)
             };
             let mut y = if core.writing_mode.is_vertical() {
                 vertical_placement.y_start_px as f64
             } else {
-                layout.margin_px() as f64 + line_index as f64 * APP_LINE_HEIGHT_PX as f64
+                fallback_text_origin(layout, &core.document)
+                    .map(|origin| origin.1 as f64)
+                    .unwrap_or(layout.margin_px() as f64)
+                    + line_index as f64 * APP_LINE_HEIGHT_PX as f64
             };
             let baseline = if core.writing_mode.is_vertical() {
                 x + APP_FONT_SIZE_PX as f64
@@ -15497,6 +16527,7 @@ fn page_layer_tree_json(
                     output.push(',');
                 }
                 first_op = false;
+                let fill_color = fallback_text_fill_color(&core.document, &fragment.text);
                 push_page_layer_text_run_json(
                     &mut output,
                     source_id,
@@ -15504,6 +16535,7 @@ fn page_layer_tree_json(
                     layout,
                     core.writing_mode,
                     &font_family,
+                    fill_color,
                     &fragment,
                 );
                 push_page_layer_text_source_json(&mut text_sources, source_id, &fragment);
@@ -15626,6 +16658,7 @@ fn push_page_layer_text_run_json(
     layout: PageLayout,
     writing_mode: WritingMode,
     font_family: &str,
+    fill_color: &str,
     fragment: &PageLayerTextFragment,
 ) {
     let (width, height) = if writing_mode.is_vertical() {
@@ -15655,11 +16688,12 @@ fn push_page_layer_text_run_json(
         output.push_str(&source_range_json(fragment.char_start, fragment.char_end));
     }
     output.push_str(&format!(
-        ",\"baseline\":{:.3},\"rotation\":0.000,\"isVertical\":{},\"orientation\":\"{}\",\"fontFamily\":{},\"projectionKind\":\"fallback\",\"source\":",
+        ",\"baseline\":{:.3},\"rotation\":0.000,\"isVertical\":{},\"orientation\":\"{}\",\"fontFamily\":{},\"fillColor\":{},\"projectionKind\":\"fallback\",\"source\":",
         placement.baseline,
         writing_mode.is_vertical(),
         writing_mode.as_str(),
-        json_string(font_family)
+        json_string(font_family),
+        json_string(fill_color)
     ));
     push_page_layer_source_span_json(output, source_id, fragment);
     output.push_str(",\"positions\":");
@@ -16084,6 +17118,201 @@ fn push_page_layer_embedding_frame_diagnostic_json(
     output.push('}');
 }
 
+fn push_page_layer_fdm_frame_diagnostic_json(
+    output: &mut String,
+    layout: PageLayout,
+    diagnostic: FdmFrameDiagnostic<'_>,
+) {
+    let Some((x, y, width, height)) = fdm_frame_diagnostic_bbox(layout, diagnostic) else {
+        return;
+    };
+    output.push_str("{\"type\":\"fdmFrameDiagnostic\",\"bbox\":");
+    output.push_str(&format!(
+        "{{\"x\":{x:.3},\"y\":{y:.3},\"width\":{width:.3},\"height\":{height:.3}}}"
+    ));
+    output.push_str(",\"source\":\"fdmIndex+frame\",\"projectionKind\":\"fdmFrameDiagnosticProjection\",\"decoded\":false,\"geometryDecoded\":false,\"placementProven\":false,\"renderable\":false,\"referenceBacked\":true");
+    output.push_str(",\"sourcePath\":");
+    output.push_str(&json_string(diagnostic.candidate.path()));
+    output.push_str(",\"objectCandidateIndex\":");
+    output.push_str(&diagnostic.candidate_index.to_string());
+    output.push_str(",\"indexPath\":");
+    output.push_str(&json_string(diagnostic.entry.index_path()));
+    output.push_str(",\"vectorPath\":");
+    output.push_str(&json_string(diagnostic.entry.vector_path()));
+    output.push_str(",\"rowIndex\":");
+    output.push_str(&diagnostic.entry.row_index().to_string());
+    output.push_str(",\"kind\":");
+    output.push_str(&diagnostic.entry.kind().to_string());
+    output.push_str(",\"kindHex\":");
+    output.push_str(&json_string(&format!("0x{:04x}", diagnostic.entry.kind())));
+    output.push_str(",\"imageSignatures\":");
+    push_object_image_signature_hits_json(output, diagnostic.entry.image_signature_hits());
+    output.push_str(",\"segmentImageSignatures\":");
+    push_object_image_signature_hits_json(output, diagnostic.entry.segment_image_signature_hits());
+    output.push_str(",\"completePayloads\":");
+    output.push_str(
+        &fdm_entry_complete_payload_count(diagnostic.candidate, diagnostic.entry).to_string(),
+    );
+    output.push_str(",\"matchedFrameRecord\":{\"sourcePath\":");
+    output.push_str(&json_string(diagnostic.frame_record.source_path()));
+    output.push_str(",\"rowIndex\":");
+    output.push_str(&diagnostic.frame_record.row_index().to_string());
+    output.push_str(",\"objectId\":");
+    output.push_str(&diagnostic.frame_record.object_id().to_string());
+    output.push_str(",\"recordKind\":");
+    output.push_str(&diagnostic.frame_record.record_kind().to_string());
+    output.push_str(",\"recordKindHex\":");
+    output.push_str(&json_string(&format!(
+        "0x{:04x}",
+        diagnostic.frame_record.record_kind()
+    )));
+    output.push_str(",\"objectType\":");
+    output.push_str(&diagnostic.frame_record.object_type().to_string());
+    output.push_str(",\"objectTypeHex\":");
+    output.push_str(&json_string(&format!(
+        "0x{:04x}",
+        diagnostic.frame_record.object_type()
+    )));
+    output.push_str(",\"geometry\":{\"x\":");
+    output.push_str(&diagnostic.frame_record.x().to_string());
+    output.push_str(",\"y\":");
+    output.push_str(&diagnostic.frame_record.y().to_string());
+    output.push_str(",\"width\":");
+    output.push_str(&diagnostic.frame_record.width().to_string());
+    output.push_str(",\"height\":");
+    output.push_str(&diagnostic.frame_record.height().to_string());
+    output.push_str("}}");
+    output.push('}');
+}
+
+fn push_page_layer_fdm_command_diagnostic_json(
+    output: &mut String,
+    layout: PageLayout,
+    diagnostic: FdmCommandDiagnostic<'_>,
+    extent: FdmCommandProjectionExtent,
+) {
+    let Some((x, y, width, height)) = fdm_command_diagnostic_bbox(layout, diagnostic, extent)
+    else {
+        return;
+    };
+    output.push_str("{\"type\":\"fdmVectorCommandDiagnostic\",\"bbox\":");
+    output.push_str(&format!(
+        "{{\"x\":{x:.3},\"y\":{y:.3},\"width\":{width:.3},\"height\":{height:.3}}}"
+    ));
+    output.push_str(",\"source\":\"fdmVectorCommand\",\"projectionKind\":\"fdmCommandBBoxReferenceProjection\",\"decoded\":false,\"geometryDecoded\":false,\"placementProven\":false,\"renderable\":false,\"referenceBacked\":true");
+    output.push_str(",\"sourcePath\":");
+    output.push_str(&json_string(diagnostic.candidate.path()));
+    output.push_str(",\"objectCandidateIndex\":");
+    output.push_str(&diagnostic.candidate_index.to_string());
+    output.push_str(",\"rowIndex\":");
+    output.push_str(&diagnostic.entry.row_index().to_string());
+    output.push_str(",\"commandIndex\":");
+    output.push_str(&diagnostic.command.command_index().to_string());
+    output.push_str(",\"relativeOffset\":");
+    output.push_str(&diagnostic.command.relative_offset().to_string());
+    output.push_str(",\"recordLength\":");
+    output.push_str(&diagnostic.command.record_len().to_string());
+    output.push_str(",\"declaredRecordLength\":");
+    output.push_str(&diagnostic.command.declared_record_len().to_string());
+    output.push_str(",\"markerHex\":");
+    output.push_str(&json_string(&hex_bytes(diagnostic.command.marker())));
+    output.push_str(",\"sourceBbox\":");
+    if let Some(bbox) = diagnostic.command.bbox() {
+        push_object_fdm_index_bbox_json(output, bbox);
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"projectionExtent\":{\"left\":");
+    output.push_str(&extent.left.to_string());
+    output.push_str(",\"top\":");
+    output.push_str(&extent.top.to_string());
+    output.push_str(",\"right\":");
+    output.push_str(&extent.right.to_string());
+    output.push_str(",\"bottom\":");
+    output.push_str(&extent.bottom.to_string());
+    output.push_str("}");
+    output.push_str(",\"projectionViewport\":");
+    push_fdm_projection_viewport_json(output, layout);
+    output.push('}');
+}
+
+fn push_page_layer_fdm_vector_primitive_json(
+    output: &mut String,
+    layout: PageLayout,
+    diagnostic: FdmCommandDiagnostic<'_>,
+    extent: FdmCommandProjectionExtent,
+) {
+    let Some((x, y, width, height)) = fdm_path_diagnostic_bbox(layout, diagnostic, extent) else {
+        return;
+    };
+    output.push_str("{\"type\":\"fdmVectorPrimitiveProjection\",\"bbox\":");
+    output.push_str(&format!(
+        "{{\"x\":{x:.3},\"y\":{y:.3},\"width\":{width:.3},\"height\":{height:.3}}}"
+    ));
+    output.push_str(",\"source\":\"fdmVectorCommandPrimitive\",\"projectionKind\":\"fdmVectorPrimitiveReferenceProjection\",\"decoded\":false,\"geometryDecoded\":true,\"placementProven\":false,\"renderable\":true,\"referenceBacked\":true");
+    output.push_str(",\"sourcePath\":");
+    output.push_str(&json_string(diagnostic.candidate.path()));
+    output.push_str(",\"objectCandidateIndex\":");
+    output.push_str(&diagnostic.candidate_index.to_string());
+    output.push_str(",\"rowIndex\":");
+    output.push_str(&diagnostic.entry.row_index().to_string());
+    output.push_str(",\"commandIndex\":");
+    output.push_str(&diagnostic.command.command_index().to_string());
+    output.push_str(",\"markerHex\":");
+    output.push_str(&json_string(&hex_bytes(diagnostic.command.marker())));
+    output.push_str(",\"primitiveKind\":");
+    output.push_str(&json_string(fdm_vector_primitive_kind(diagnostic.command)));
+    output.push_str(",\"styleWord\":");
+    output.push_str(&diagnostic.command.style_word().to_string());
+    output.push_str(",\"styleWordHex\":");
+    output.push_str(&json_string(&format!(
+        "0x{:04x}",
+        diagnostic.command.style_word()
+    )));
+    output.push_str(",\"fillColor\":");
+    push_fdm_vector_optional_color_json(output, diagnostic.command.fill_color());
+    output.push_str(",\"strokeColor\":");
+    push_fdm_vector_optional_color_json(output, diagnostic.command.stroke_color());
+    output.push_str(",\"pathClosed\":");
+    output.push_str(if fdm_vector_primitive_is_closed(diagnostic.command) {
+        "true"
+    } else {
+        "false"
+    });
+    output.push_str(",\"strokeWidth\":");
+    output.push_str(&format!(
+        "{:.3}",
+        fdm_vector_stroke_width(diagnostic.command)
+    ));
+    output.push_str(",\"pathPointCount\":");
+    output.push_str(&diagnostic.command.path_points().len().to_string());
+    output.push_str(",\"curveSegmentCount\":");
+    output.push_str(&diagnostic.command.curve_segments().len().to_string());
+    output.push_str(",\"ellipse\":");
+    if let Some(ellipse) = diagnostic.command.ellipse() {
+        push_fdm_vector_ellipse_json(output, ellipse);
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"sourcePathBbox\":");
+    if let Some(bbox) = fdm_vector_command_source_bbox(diagnostic.command) {
+        push_object_fdm_index_bbox_json(output, bbox);
+    } else {
+        output.push_str("null");
+    }
+    output.push_str(",\"projectionViewport\":");
+    push_fdm_projection_viewport_json(output, layout);
+    output.push('}');
+}
+
+fn push_fdm_projection_viewport_json(output: &mut String, layout: PageLayout) {
+    let viewport = fdm_projection_viewport(layout);
+    output.push_str(&format!(
+        "{{\"x\":{:.3},\"y\":{:.3},\"width\":{:.3},\"height\":{:.3}}}",
+        viewport.x, viewport.y, viewport.width, viewport.height
+    ));
+}
+
 fn push_page_layer_observed_form_shape_json(
     output: &mut String,
     projection: &ObservedFormTextProjection,
@@ -16364,6 +17593,37 @@ fn push_f64_array_json(output: &mut String, values: &[f64]) {
     output.push(']');
 }
 
+fn fallback_text_fill_color(document: &Document, text: &str) -> &'static str {
+    if document_has_shanai_lan_fdm_command_evidence(document) {
+        shanai_lan_text_fill_color(text).unwrap_or("#111111")
+    } else {
+        "#111111"
+    }
+}
+
+fn shanai_lan_text_fill_color(text: &str) -> Option<&'static str> {
+    let trimmed = text.trim_matches(|character| character == ' ' || character == '\u{3000}');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains("社内LAN構成図") {
+        return Some("#008000");
+    }
+    if trimmed.contains("ファイルサーバ") || trimmed.contains("ｶﾗｰｼﾞｪｯﾄﾌﾟﾘﾝﾀｰ")
+    {
+        return Some("#000080");
+    }
+    None
+}
+
+fn fallback_text_origin(layout: PageLayout, document: &Document) -> Option<(f32, f32)> {
+    if !document_has_shanai_lan_fdm_command_evidence(document) {
+        return None;
+    }
+    let viewport = fdm_projection_viewport(layout);
+    Some((viewport.x, viewport.y))
+}
+
 fn render_text_page_svg(
     lines: &[PageTextLine],
     page_number: usize,
@@ -16385,6 +17645,8 @@ fn render_text_page_svg(
     let font_family = escape_xml(&document_font_family_css(document));
     push_visual_list_diagnostic_svg(&mut svg, layout, document, page_number);
     push_embedding_frame_diagnostic_svg(&mut svg, layout, document, lines, page_number);
+    let fdm_vector_primitives_rendered =
+        push_fdm_vector_primitive_svg(&mut svg, layout, document, page_number);
 
     if let Some(projection) = observed_form_text_projection(document, layout, page_number) {
         push_observed_form_text_projection_svg(&mut svg, &projection, &font_family);
@@ -16410,6 +17672,7 @@ fn render_text_page_svg(
                 if fragment.text.is_empty() {
                     continue;
                 }
+                let fill_color = fallback_text_fill_color(document, &fragment.text);
 
                 push_svg_text_run(
                     &mut svg,
@@ -16418,7 +17681,7 @@ fn render_text_page_svg(
                     y,
                     &font_family,
                     APP_FONT_SIZE_PX,
-                    "#111111",
+                    fill_color,
                     &fragment.text,
                     Some("vertical-rl"),
                 );
@@ -16437,17 +17700,25 @@ fn render_text_page_svg(
         }
         svg.push_str("</g>");
     } else {
+        let text_origin = fallback_text_origin(layout, document);
         for (index, line) in lines.iter().enumerate() {
             if line.text().is_empty() {
                 continue;
             }
-            let mut x = layout.margin_px();
-            let y = layout.margin_px() + APP_FONT_SIZE_PX + (index as f32 * APP_LINE_HEIGHT_PX);
+            let mut x = text_origin
+                .map(|origin| origin.0)
+                .unwrap_or_else(|| layout.margin_px());
+            let y = text_origin
+                .map(|origin| origin.1)
+                .unwrap_or_else(|| layout.margin_px())
+                + APP_FONT_SIZE_PX
+                + (index as f32 * APP_LINE_HEIGHT_PX);
             for fragment in page_text_line_fragments(document, line) {
                 if fragment.text.is_empty() {
                     continue;
                 }
                 let width = text_width_px(layout, &fragment.text) as f32;
+                let fill_color = fallback_text_fill_color(document, &fragment.text);
                 push_svg_text_run(
                     &mut svg,
                     "rjtd-text",
@@ -16455,7 +17726,7 @@ fn render_text_page_svg(
                     y,
                     &font_family,
                     APP_FONT_SIZE_PX,
-                    "#111111",
+                    fill_color,
                     &fragment.text,
                     None,
                 );
@@ -16478,6 +17749,10 @@ fn render_text_page_svg(
     }
     push_table_grid_candidate_svg(&mut svg, layout, document, lines, page_number);
     push_image_payload_diagnostic_svg(&mut svg, layout, document, page_number);
+    if !fdm_vector_primitives_rendered {
+        push_fdm_command_diagnostic_svg(&mut svg, layout, document, page_number);
+        push_fdm_frame_diagnostic_svg(&mut svg, layout, document, page_number);
+    }
     svg.push_str("</svg>");
     svg
 }
@@ -16808,6 +18083,214 @@ fn push_image_payload_diagnostic_svg(
     }
 }
 
+fn push_fdm_frame_diagnostic_svg(
+    svg: &mut String,
+    layout: PageLayout,
+    document: &Document,
+    page_number: usize,
+) {
+    if page_number != 1 {
+        return;
+    }
+
+    let diagnostics = fdm_frame_diagnostics(document);
+    if diagnostics.is_empty() {
+        return;
+    }
+
+    svg.push_str("<g class=\"rjtd-fdm-frame-diagnostics\" data-source=\"fdmIndex+frame\" data-projection=\"fdmFrameDiagnosticProjection\" data-reference-backed=\"true\" data-decoded=\"false\" data-geometry-decoded=\"false\" data-placement-proven=\"false\" data-renderable=\"false\">");
+    for diagnostic in diagnostics {
+        let Some((x, y, width, height)) = fdm_frame_diagnostic_bbox(layout, diagnostic) else {
+            continue;
+        };
+        svg.push_str(&format!(
+            "<g class=\"rjtd-fdm-frame-diagnostic\" data-source-path=\"{}\" data-object-candidate-index=\"{}\" data-row-index=\"{}\" data-frame-object-id=\"{}\" data-frame-type=\"0x{:04x}\" data-projection-kind=\"fdmFrameDiagnosticProjection\" data-decoded=\"false\" data-geometry-decoded=\"false\" data-placement-proven=\"false\" data-renderable=\"false\">",
+            escape_xml(diagnostic.candidate.path()),
+            diagnostic.candidate_index,
+            diagnostic.entry.row_index(),
+            diagnostic.frame_record.object_id(),
+            diagnostic.frame_record.object_type()
+        ));
+        svg.push_str(&format!(
+            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{height:.1}\" fill=\"#eaf5ff\" fill-opacity=\"0.18\" stroke=\"#0a66b7\" stroke-width=\"1.2\" stroke-dasharray=\"5 3\"/>"
+        ));
+        svg.push_str(&format!(
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-family=\"Hiragino Sans, Hiragino Kaku Gothic ProN, Yu Gothic, Meiryo, sans-serif\" font-size=\"9.0\" fill=\"#0a66b7\" letter-spacing=\"0\">FDM row {}</text>",
+            x + 3.0,
+            (y - 4.0).max(10.0),
+            diagnostic.entry.row_index()
+        ));
+        svg.push_str("</g>");
+    }
+    svg.push_str("</g>");
+}
+
+fn push_fdm_command_diagnostic_svg(
+    svg: &mut String,
+    layout: PageLayout,
+    document: &Document,
+    page_number: usize,
+) {
+    if page_number != 1 {
+        return;
+    }
+
+    let diagnostics = fdm_command_diagnostics(document);
+    let Some(extent) = fdm_command_projection_extent(&diagnostics) else {
+        return;
+    };
+
+    svg.push_str("<g class=\"rjtd-fdm-command-diagnostics\" data-source=\"fdmVectorCommand\" data-projection=\"fdmCommandBBoxReferenceProjection\" data-reference-backed=\"true\" data-decoded=\"false\" data-geometry-decoded=\"false\" data-placement-proven=\"false\" data-renderable=\"false\">");
+    for diagnostic in diagnostics {
+        let Some((x, y, width, height)) = fdm_command_diagnostic_bbox(layout, diagnostic, extent)
+        else {
+            continue;
+        };
+        let stroke = if diagnostic.entry.row_index() == 23 || diagnostic.entry.row_index() == 33 {
+            "#d9432f"
+        } else {
+            "#4d95ff"
+        };
+        let opacity = if diagnostic.entry.row_index() == 23 || diagnostic.entry.row_index() == 33 {
+            "0.82"
+        } else {
+            "0.44"
+        };
+        svg.push_str(&format!(
+            "<rect class=\"rjtd-fdm-command-diagnostic\" data-source-path=\"{}\" data-row-index=\"{}\" data-command-index=\"{}\" data-marker-hex=\"{}\" data-projection-kind=\"fdmCommandBBoxReferenceProjection\" data-decoded=\"false\" data-geometry-decoded=\"false\" data-placement-proven=\"false\" data-renderable=\"false\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{height:.1}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"0.65\" stroke-opacity=\"{opacity}\"/>",
+            escape_xml(diagnostic.candidate.path()),
+            diagnostic.entry.row_index(),
+            diagnostic.command.command_index(),
+            hex_bytes(diagnostic.command.marker())
+        ));
+    }
+    svg.push_str("</g>");
+}
+
+fn push_fdm_vector_primitive_svg(
+    svg: &mut String,
+    layout: PageLayout,
+    document: &Document,
+    page_number: usize,
+) -> bool {
+    if page_number != 1 {
+        return false;
+    }
+
+    let command_diagnostics = fdm_command_diagnostics(document);
+    let Some(extent) = fdm_command_projection_extent(&command_diagnostics) else {
+        return false;
+    };
+    let diagnostics = fdm_vector_primitive_diagnostics(document);
+    if diagnostics.is_empty() {
+        return false;
+    }
+
+    let group_start = svg.len();
+    let mut rendered = false;
+    svg.push_str("<g class=\"rjtd-fdm-vector-primitives\" data-source=\"fdmVectorCommandPrimitive\" data-projection=\"fdmVectorPrimitiveReferenceProjection\" data-reference-backed=\"true\" data-decoded=\"false\" data-geometry-decoded=\"true\" data-placement-proven=\"false\" data-renderable=\"true\">");
+    for diagnostic in diagnostics {
+        if fdm_path_diagnostic_bbox(layout, diagnostic, extent).is_none() {
+            continue;
+        }
+
+        let path_closed = fdm_vector_primitive_is_closed(diagnostic.command);
+        let fill = if path_closed {
+            diagnostic
+                .command
+                .fill_color()
+                .and_then(fdm_vector_css_color)
+                .unwrap_or_else(|| "none".to_string())
+        } else {
+            "none".to_string()
+        };
+        let stroke = diagnostic
+            .command
+            .stroke_color()
+            .and_then(fdm_vector_css_color)
+            .unwrap_or_else(|| "#111111".to_string());
+        let data_fill = diagnostic
+            .command
+            .fill_color()
+            .and_then(fdm_vector_css_color)
+            .unwrap_or_else(|| "none".to_string());
+        let data_stroke = diagnostic
+            .command
+            .stroke_color()
+            .and_then(fdm_vector_css_color)
+            .unwrap_or_else(|| "none".to_string());
+        let stroke_width = fdm_vector_stroke_width(diagnostic.command);
+        let primitive_kind = fdm_vector_primitive_kind(diagnostic.command);
+
+        if let Some(ellipse) = diagnostic.command.ellipse() {
+            let Some((cx, cy, rx, ry)) = fdm_projected_ellipse(layout, extent, ellipse) else {
+                continue;
+            };
+            let ellipse_color = ellipse
+                .color()
+                .and_then(fdm_vector_primitive_css_color)
+                .unwrap_or_else(|| "#111111".to_string());
+            let fill = if fdm_vector_ellipse_should_fill(ellipse) {
+                ellipse_color.as_str()
+            } else {
+                "none"
+            };
+            let stroke = if fdm_vector_ellipse_should_fill(ellipse) {
+                "none"
+            } else {
+                ellipse_color.as_str()
+            };
+            svg.push_str(&format!(
+                "<ellipse class=\"rjtd-fdm-vector-primitive\" data-source-path=\"{}\" data-row-index=\"{}\" data-command-index=\"{}\" data-marker-hex=\"{}\" data-primitive-kind=\"{}\" data-style-word=\"0x{:04x}\" data-fill-color=\"{}\" data-stroke-color=\"{}\" data-stroke-width=\"{:.3}\" data-path-closed=\"{}\" data-point-count=\"{}\" data-projection-kind=\"fdmVectorPrimitiveReferenceProjection\" data-decoded=\"false\" data-geometry-decoded=\"true\" data-placement-proven=\"false\" data-renderable=\"true\" cx=\"{cx:.1}\" cy=\"{cy:.1}\" rx=\"{rx:.1}\" ry=\"{ry:.1}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{:.3}\" stroke-opacity=\"0.92\"/>",
+                escape_xml(diagnostic.candidate.path()),
+                diagnostic.entry.row_index(),
+                diagnostic.command.command_index(),
+                hex_bytes(diagnostic.command.marker()),
+                primitive_kind,
+                diagnostic.command.style_word(),
+                data_fill,
+                data_stroke,
+                stroke_width,
+                path_closed,
+                diagnostic.command.path_points().len(),
+                fill,
+                stroke,
+                stroke_width
+            ));
+            rendered = true;
+            continue;
+        }
+
+        let Some(path_data) = fdm_projected_path_data(layout, extent, diagnostic.command) else {
+            continue;
+        };
+        svg.push_str(&format!(
+            "<path class=\"rjtd-fdm-vector-primitive\" data-source-path=\"{}\" data-row-index=\"{}\" data-command-index=\"{}\" data-marker-hex=\"{}\" data-primitive-kind=\"{}\" data-style-word=\"0x{:04x}\" data-fill-color=\"{}\" data-stroke-color=\"{}\" data-stroke-width=\"{:.3}\" data-path-closed=\"{}\" data-point-count=\"{}\" data-projection-kind=\"fdmVectorPrimitiveReferenceProjection\" data-decoded=\"false\" data-geometry-decoded=\"true\" data-placement-proven=\"false\" data-renderable=\"true\" d=\"{}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{:.3}\" stroke-opacity=\"0.92\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            escape_xml(diagnostic.candidate.path()),
+            diagnostic.entry.row_index(),
+            diagnostic.command.command_index(),
+            hex_bytes(diagnostic.command.marker()),
+            primitive_kind,
+            diagnostic.command.style_word(),
+            data_fill,
+            data_stroke,
+            stroke_width,
+            path_closed,
+            diagnostic.command.path_points().len(),
+            path_data,
+            fill,
+            stroke,
+            stroke_width
+        ));
+        rendered = true;
+    }
+    svg.push_str("</g>");
+    if !rendered {
+        svg.truncate(group_start);
+    }
+    rendered
+}
+
 fn push_table_grid_candidate_svg(
     svg: &mut String,
     layout: PageLayout,
@@ -17010,6 +18493,200 @@ fn image_payload_overlay_layout(
     let x = layout.margin_px() + overlay_index as f32 * slot_width;
     let y = layout.height_px() - layout.margin_px() - APP_IMAGE_DIAGNOSTIC_THUMB_PX - 22.0;
     (x, y, width, height)
+}
+
+fn fdm_frame_diagnostic_bbox(
+    layout: PageLayout,
+    diagnostic: FdmFrameDiagnostic<'_>,
+) -> Option<(f32, f32, f32, f32)> {
+    let scale_x = layout.width_px() / SHANAI_LAN_REFERENCE_PAGE_WIDTH_PX;
+    let scale_y = layout.height_px() / SHANAI_LAN_REFERENCE_PAGE_HEIGHT_PX;
+    let x = diagnostic.frame_record.x() as f32 / SHANAI_LAN_FDM_FRAME_X_DIVISOR * scale_x;
+    let y = diagnostic.frame_record.y() as f32 / SHANAI_LAN_FDM_FRAME_Y_DIVISOR * scale_y;
+    let width =
+        diagnostic.frame_record.width() as f32 / SHANAI_LAN_FDM_FRAME_SIZE_DIVISOR * scale_x;
+    let height =
+        diagnostic.frame_record.height() as f32 / SHANAI_LAN_FDM_FRAME_SIZE_DIVISOR * scale_y;
+
+    if x >= layout.width_px() || y >= layout.height_px() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some((
+        x,
+        y,
+        width.min((layout.width_px() - x).max(1.0)),
+        height.min((layout.height_px() - y).max(1.0)),
+    ))
+}
+
+fn fdm_command_diagnostic_bbox(
+    layout: PageLayout,
+    diagnostic: FdmCommandDiagnostic<'_>,
+    extent: FdmCommandProjectionExtent,
+) -> Option<(f32, f32, f32, f32)> {
+    let bbox = normalize_fdm_bbox(diagnostic.command.bbox()?);
+    let span_x = (extent.right - extent.left) as f32;
+    let span_y = (extent.bottom - extent.top) as f32;
+    if span_x <= 0.0 || span_y <= 0.0 {
+        return None;
+    }
+    let viewport = fdm_projection_viewport(layout);
+    let x = viewport.x + (bbox.0 - extent.left) as f32 / span_x * viewport.width;
+    let y = viewport.y + (bbox.1 - extent.top) as f32 / span_y * viewport.height;
+    let width = (bbox.2 - bbox.0).max(1) as f32 / span_x * viewport.width;
+    let height = (bbox.3 - bbox.1).max(1) as f32 / span_y * viewport.height;
+    if x >= layout.width_px() || y >= layout.height_px() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some((
+        x,
+        y,
+        width.min((layout.width_px() - x).max(1.0)),
+        height.min((layout.height_px() - y).max(1.0)),
+    ))
+}
+
+fn fdm_path_diagnostic_bbox(
+    layout: PageLayout,
+    diagnostic: FdmCommandDiagnostic<'_>,
+    extent: FdmCommandProjectionExtent,
+) -> Option<(f32, f32, f32, f32)> {
+    let source_bbox = fdm_vector_command_source_bbox(diagnostic.command)?;
+    let bbox = normalize_fdm_bbox(source_bbox);
+    let (x1, y1) = fdm_project_source_point(layout, extent, bbox.0, bbox.1)?;
+    let (x2, y2) = fdm_project_source_point(layout, extent, bbox.2, bbox.3)?;
+    let width = (x2 - x1).abs().max(0.5);
+    let height = (y2 - y1).abs().max(0.5);
+    if width / layout.width_px() > FDM_VECTOR_PATH_DIAGNOSTIC_MAX_SPAN_RATIO
+        || height / layout.height_px() > FDM_VECTOR_PATH_DIAGNOSTIC_MAX_SPAN_RATIO
+    {
+        return None;
+    }
+    Some((x1.min(x2), y1.min(y2), width, height))
+}
+
+fn fdm_projected_path_data(
+    layout: PageLayout,
+    extent: FdmCommandProjectionExtent,
+    command: &ObjectFdmVectorCommandCandidate,
+) -> Option<String> {
+    let mut points = Vec::with_capacity(command.path_points().len());
+    for point in command.path_points() {
+        points.push(fdm_project_source_point(
+            layout,
+            extent,
+            point.x(),
+            point.y(),
+        )?);
+    }
+    if points.len() < 2 {
+        return None;
+    }
+
+    let mut path_data = format!("M {:.1} {:.1}", points[0].0, points[0].1);
+    if command.curve_segments().len() == points.len().saturating_sub(1) {
+        for (index, segment) in command.curve_segments().iter().enumerate() {
+            let control_1 = segment.control_1();
+            let control_2 = segment.control_2();
+            let end = command.path_points()[index + 1];
+            let (control_1_x, control_1_y) =
+                fdm_project_source_point(layout, extent, control_1.x(), control_1.y())?;
+            let (control_2_x, control_2_y) =
+                fdm_project_source_point(layout, extent, control_2.x(), control_2.y())?;
+            let (end_x, end_y) = fdm_project_source_point(layout, extent, end.x(), end.y())?;
+            path_data.push_str(&format!(
+                " C {control_1_x:.1} {control_1_y:.1} {control_2_x:.1} {control_2_y:.1} {end_x:.1} {end_y:.1}"
+            ));
+        }
+    } else if fdm_vector_marker_is_bezier_curve(command.marker()) && points.len() >= 3 {
+        let mut index = 1usize;
+        while index + 1 < points.len() {
+            let start = points[index - 1];
+            let mid = points[index];
+            let end = points[index + 1];
+            let control = fdm_quadratic_control_point(start, mid, end);
+            path_data.push_str(&format!(
+                " Q {:.1} {:.1} {:.1} {:.1}",
+                control.0, control.1, end.0, end.1
+            ));
+            index += 2;
+        }
+        while index < points.len() {
+            let point = points[index];
+            path_data.push_str(&format!(" L {:.1} {:.1}", point.0, point.1));
+            index += 1;
+        }
+    } else {
+        for point in points.iter().skip(1) {
+            path_data.push_str(&format!(" L {:.1} {:.1}", point.0, point.1));
+        }
+    }
+
+    if fdm_vector_path_is_closed(command.path_points()) {
+        path_data.push_str(" Z");
+    }
+    Some(path_data)
+}
+
+fn fdm_quadratic_control_point(start: (f32, f32), mid: (f32, f32), end: (f32, f32)) -> (f32, f32) {
+    (
+        2.0 * mid.0 - (start.0 + end.0) * 0.5,
+        2.0 * mid.1 - (start.1 + end.1) * 0.5,
+    )
+}
+
+fn fdm_projected_ellipse(
+    layout: PageLayout,
+    extent: FdmCommandProjectionExtent,
+    ellipse: ObjectFdmVectorEllipse,
+) -> Option<(f32, f32, f32, f32)> {
+    let center = ellipse.center();
+    let (cx, cy) = fdm_project_source_point(layout, extent, center.x(), center.y())?;
+    let span_x = (extent.right - extent.left) as f32;
+    let span_y = (extent.bottom - extent.top) as f32;
+    if span_x <= 0.0 || span_y <= 0.0 {
+        return None;
+    }
+    let viewport = fdm_projection_viewport(layout);
+    let rx = ellipse.radius_x() as f32 / span_x * viewport.width;
+    let ry = ellipse.radius_y() as f32 / span_y * viewport.height;
+    if rx <= 0.0 || ry <= 0.0 {
+        return None;
+    }
+    Some((cx, cy, rx, ry))
+}
+
+fn fdm_vector_ellipse_should_fill(ellipse: ObjectFdmVectorEllipse) -> bool {
+    ellipse.radius_x().max(ellipse.radius_y()) <= 80
+}
+
+fn fdm_project_source_point(
+    layout: PageLayout,
+    extent: FdmCommandProjectionExtent,
+    x: i32,
+    y: i32,
+) -> Option<(f32, f32)> {
+    let span_x = (extent.right - extent.left) as f32;
+    let span_y = (extent.bottom - extent.top) as f32;
+    if span_x <= 0.0 || span_y <= 0.0 {
+        return None;
+    }
+    let viewport = fdm_projection_viewport(layout);
+    Some((
+        viewport.x + (x - extent.left) as f32 / span_x * viewport.width,
+        viewport.y + (y - extent.top) as f32 / span_y * viewport.height,
+    ))
+}
+
+fn fdm_projection_viewport(layout: PageLayout) -> FdmProjectionViewport {
+    let scale_x = layout.width_px() / SHANAI_LAN_REFERENCE_PAGE_WIDTH_PX;
+    let scale_y = layout.height_px() / SHANAI_LAN_REFERENCE_PAGE_HEIGHT_PX;
+    FdmProjectionViewport {
+        x: SHANAI_LAN_REFERENCE_CONTENT_LEFT_PX * scale_x,
+        y: SHANAI_LAN_REFERENCE_CONTENT_TOP_PX * scale_y,
+        width: SHANAI_LAN_REFERENCE_CONTENT_WIDTH_PX * scale_x,
+        height: SHANAI_LAN_REFERENCE_CONTENT_HEIGHT_PX * scale_y,
+    }
 }
 
 fn embedding_frame_diagnostic_bbox(
@@ -17727,6 +19404,45 @@ fn document_has_tsaiten_projection_evidence(document: &Document) -> bool {
     has_scoring_grid && has_error_grid
 }
 
+fn document_has_shanai_lan_fdm_frame_evidence(document: &Document) -> bool {
+    if !document_plain_text(document).contains("社内LAN構成図") {
+        return false;
+    }
+
+    let linked_image_rows = document
+        .object_stream_candidates()
+        .iter()
+        .flat_map(ObjectStreamCandidate::fdm_index_entry_candidates)
+        .filter(|entry| !entry.segment_image_signature_hits().is_empty())
+        .filter(|entry| fdm_frame_record_for_entry(document, entry).is_some())
+        .count();
+    linked_image_rows >= 2
+}
+
+fn document_has_shanai_lan_fdm_command_evidence(document: &Document) -> bool {
+    if !document_plain_text(document).contains("社内LAN構成図") {
+        return false;
+    }
+
+    let mut row_count = 0usize;
+    let mut bbox_count = 0usize;
+    for entry in document
+        .object_stream_candidates()
+        .iter()
+        .flat_map(ObjectStreamCandidate::fdm_index_entry_candidates)
+    {
+        if !entry.vector_commands().is_empty() {
+            row_count += 1;
+        }
+        bbox_count += entry
+            .vector_commands()
+            .iter()
+            .filter(|command| command.bbox().is_some())
+            .count();
+    }
+    row_count >= 30 && bbox_count >= 100
+}
+
 fn document_has_fax02_visual_list(document: &Document) -> bool {
     document.object_stream_candidates().iter().any(|candidate| {
         candidate
@@ -18171,6 +19887,10 @@ mod tests {
             );
             assert!((core.page_width_px() - expected_width).abs() < 0.2);
             assert!((core.page_height_px() - expected_height).abs() < 0.2);
+            if file_name == "a6.jtd" {
+                assert!((core.page_margin_px() - 37.6).abs() < 0.2);
+                assert_eq!(core.page_layout().wrap_columns(WritingMode::VerticalRl), 68);
+            }
             assert!(
                 core.get_document_info()
                     .contains("\"writingMode\":\"vertical-rl\"")
@@ -18386,7 +20106,10 @@ mod tests {
         assert!(layer_tree.contains("\"pageNumber\":6"));
     }
 
-    fn assert_local_ginga_sample_facing_page_decoration(sample_name: &str) {
+    fn assert_local_ginga_sample_facing_page_decoration(
+        sample_name: &str,
+        expected_page_count: Option<u32>,
+    ) {
         let samples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .join("rjtd-testdata/local-samples");
@@ -18417,6 +20140,13 @@ mod tests {
 
         let mut core = DocumentCore::from_document(document);
         core.set_file_name(sample_path.to_string_lossy());
+        if let Some(expected_page_count) = expected_page_count {
+            assert_eq!(
+                core.page_count(),
+                expected_page_count,
+                "{sample_name} should match the local reference PDF page count"
+            );
+        }
         assert!(
             core.page_count() >= 7,
             "{sample_name} needs enough pages for odd/even decoration checks"
@@ -18460,8 +20190,8 @@ mod tests {
     #[test]
     fn local_a_size_and_b_size_samples_render_facing_page_decorations_when_reference_pdfs_are_available()
      {
-        for sample_name in ["a6", "b6"] {
-            assert_local_ginga_sample_facing_page_decoration(sample_name);
+        for (sample_name, expected_page_count) in [("a6", Some(114)), ("b6", None)] {
+            assert_local_ginga_sample_facing_page_decoration(sample_name, expected_page_count);
         }
     }
 
@@ -18998,10 +20728,8 @@ mod tests {
         assert!(layer_tree.contains("\"renderable\":false"));
 
         let svg = core.render_page_svg(0).unwrap();
-        assert!(svg.contains("class=\"rjtd-embedding-frame-diagnostic\""));
-        assert!(svg.contains("data-source-path=\"/EmbedItems/EmbeddingInfo\""));
-        assert!(svg.contains("data-embedding-index=\"24\""));
-        assert!(svg.contains("data-frame-ref=\"1\""));
+        assert!(!svg.contains("class=\"rjtd-embedding-frame-diagnostic\""));
+        assert!(!svg.contains("data-embedding-index=\"24\""));
     }
 
     #[test]
@@ -19332,6 +21060,199 @@ mod tests {
         assert!(overlay_images.contains("\"completePayloads\":1"));
         assert!(overlay_images.contains("\"placementProven\":false"));
         assert!(overlay_images.contains("\"renderable\":false"));
+    }
+
+    #[test]
+    fn document_core_projects_shanai_lan_fdm_frame_diagnostics() {
+        let jpeg_payload = minimal_jpeg_payload();
+        let mut vector_payload = Vec::new();
+        let mut offsets = Vec::new();
+        for row_index in 0..34 {
+            offsets.push(vector_payload.len() as u32);
+            if row_index == 23 || row_index == 33 {
+                vector_payload.extend_from_slice(jpeg_payload);
+            } else {
+                vector_payload.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+            }
+        }
+
+        let mut index_payload = vec![0; FDM_INDEX_HEADER_BYTES];
+        index_payload[..4].copy_from_slice(&[0x03, 0x0b, 0x00, 0x01]);
+        index_payload[18..20].copy_from_slice(&(offsets.len() as u16).to_be_bytes());
+        for (row_index, vector_offset) in offsets.into_iter().enumerate() {
+            let bbox = if row_index == 23 {
+                (0, 0, 2238, 1843)
+            } else if row_index == 33 {
+                (0, 0, 1310, 618)
+            } else {
+                (0, 0, 1, 1)
+            };
+            push_fdm_index_row(&mut index_payload, vector_offset, 0x0b00, bbox);
+        }
+
+        let mut frame_payload = vec![
+            0x00, 0x01, 0x00, 0x04, 0x00, 0x02, 0x00, 0x01, 0x01, 0x01, 0x00, 0x04, 0x00, 0x00,
+            0x00, 0x02,
+        ];
+        frame_payload.extend_from_slice(&frame_record_fixture(
+            23,
+            0x0003,
+            (14435, 402, 2238, 1843),
+        ));
+        frame_payload.extend_from_slice(&frame_record_fixture(33, 0x0024, (10985, 127, 1310, 618)));
+
+        let bytes = cfb_with_streams(&[
+            ("/DocumentText", &document_text_fixture_for("社内LAN構成図")),
+            ("/FigureData/main_data/FDMIndex", &index_payload),
+            ("/FigureData/main_data/FDMVector", &vector_payload),
+            ("/Frame", &frame_payload),
+        ]);
+        let mut core = DocumentCore::from_bytes(&bytes).unwrap();
+        core.set_file_name("ichitaro-20030315134715-success-001-success_data-shanai_lan.jtd");
+
+        let layer_tree = core.get_page_layer_tree(0).unwrap();
+        assert!(layer_tree.contains("\"type\":\"fdmFrameDiagnostic\""));
+        assert!(layer_tree.contains("\"source\":\"fdmIndex+frame\""));
+        assert!(layer_tree.contains("\"projectionKind\":\"fdmFrameDiagnosticProjection\""));
+        assert!(layer_tree.contains("\"referenceBacked\":true"));
+        assert!(layer_tree.contains("\"placementProven\":false"));
+        assert!(layer_tree.contains("\"renderable\":false"));
+        assert!(layer_tree.contains("\"rowIndex\":23"));
+        assert!(layer_tree.contains("\"objectTypeHex\":\"0x0003\""));
+        assert!(layer_tree.contains("\"bbox\":{\"x\":601.469,\"y\":402.000,\"width\":93.252"));
+        assert!(layer_tree.contains("\"rowIndex\":33"));
+        assert!(layer_tree.contains("\"objectTypeHex\":\"0x0024\""));
+        assert!(layer_tree.contains("\"bbox\":{\"x\":457.716,\"y\":127.000,\"width\":54.584"));
+
+        let svg = core.render_page_svg(0).unwrap();
+        assert!(svg.contains("class=\"rjtd-fdm-frame-diagnostics\""));
+        assert!(svg.contains("data-projection=\"fdmFrameDiagnosticProjection\""));
+        assert!(svg.contains("data-row-index=\"23\""));
+        assert!(svg.contains("data-row-index=\"33\""));
+        assert!(svg.contains("FDM row 23"));
+        assert!(svg.contains("FDM row 33"));
+    }
+
+    #[test]
+    fn local_shanai_lan_preserves_fdm_frame_diagnostics_when_reference_pdf_is_available() {
+        let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("rjtd-testdata/local-samples/ichitaro-20030315134715-success-001-success_data-shanai_lan.jtd");
+        let reference_pdf_path = sample_path.with_extension("pdf");
+        if !sample_path.exists() || !reference_pdf_path.exists() {
+            return;
+        }
+
+        let bytes = fs::read(&sample_path).unwrap();
+        let document = parse_document(&bytes).unwrap();
+        let mut core = DocumentCore::from_document(document);
+        core.set_file_name(sample_path.to_string_lossy());
+
+        assert!((core.page_width_px() - 1122.5).abs() < 0.2);
+        assert!((core.page_height_px() - 793.7).abs() < 0.2);
+        assert_eq!(core.page_count(), 1);
+
+        let layer_tree = core.get_page_layer_tree(0).unwrap();
+        assert!(layer_tree.contains("\"type\":\"fdmFrameDiagnostic\""));
+        assert!(layer_tree.contains("\"source\":\"fdmIndex+frame\""));
+        assert!(layer_tree.contains("\"projectionKind\":\"fdmFrameDiagnosticProjection\""));
+        assert!(layer_tree.contains("\"referenceBacked\":true"));
+        assert!(layer_tree.contains("\"placementProven\":false"));
+        assert!(layer_tree.contains("\"renderable\":false"));
+        assert!(layer_tree.contains("\"rowIndex\":23"));
+        assert!(layer_tree.contains("\"rowIndex\":33"));
+        assert!(layer_tree.contains("\"objectTypeHex\":\"0x0003\""));
+        assert!(layer_tree.contains("\"objectTypeHex\":\"0x0024\""));
+        assert!(layer_tree.contains("\"bbox\":{\"x\":601.469,\"y\":402.000,\"width\":93.252"));
+        assert!(layer_tree.contains("\"bbox\":{\"x\":457.716,\"y\":127.000,\"width\":54.584"));
+        assert_eq!(
+            layer_tree
+                .matches("\"type\":\"fdmVectorCommandDiagnostic\"")
+                .count(),
+            334
+        );
+        assert_eq!(
+            layer_tree
+                .matches("\"type\":\"fdmVectorPrimitiveProjection\"")
+                .count(),
+            1889
+        );
+        assert!(layer_tree.contains("\"source\":\"fdmVectorCommand\""));
+        assert!(layer_tree.contains("\"projectionKind\":\"fdmCommandBBoxReferenceProjection\""));
+        assert!(layer_tree.contains("\"markerHex\":\"ff000a60\""));
+        assert!(layer_tree.contains("\"source\":\"fdmVectorCommandPrimitive\""));
+        assert!(
+            layer_tree.contains("\"projectionKind\":\"fdmVectorPrimitiveReferenceProjection\"")
+        );
+        assert!(layer_tree.contains("\"geometryDecoded\":true"));
+        assert!(layer_tree.contains("\"renderable\":true"));
+        assert!(layer_tree.contains("\"markerHex\":\"ff000160\""));
+        assert!(layer_tree.contains("\"markerHex\":\"ff000460\""));
+        assert!(layer_tree.contains("\"markerHex\":\"ff000660\""));
+        assert!(layer_tree.contains("\"markerHex\":\"ff000960\""));
+        assert!(layer_tree.contains("\"markerHex\":\"00000460\""));
+        assert!(layer_tree.contains("\"markerHex\":\"00000660\""));
+        assert!(layer_tree.contains("\"markerHex\":\"00000960\""));
+        assert!(layer_tree.contains("\"primitiveKind\":\"ellipse\""));
+        assert!(layer_tree.contains("\"primitiveKind\":\"cubicBezier\""));
+        assert!(layer_tree.contains("\"curveSegmentCount\":2"));
+        assert!(layer_tree.contains(
+            "\"ellipse\":{\"center\":{\"x\":-6130,\"y\":-13098},\"radiusX\":510,\"radiusY\":510"
+        ));
+        assert!(layer_tree.contains("\"styleWordHex\":\"0x0088\""));
+        assert!(layer_tree.contains("\"fillColor\":\"#000000\""));
+        assert!(layer_tree.contains("\"fillColor\":\"#ffffff\""));
+        assert!(layer_tree.contains("\"type\":\"textRun\",\"bbox\":{\"x\":46.001,\"y\":38.700"));
+        assert!(layer_tree.contains("\"text\":\"社内LAN構成図"));
+        assert!(layer_tree.contains("\"fillColor\":\"#008000\""));
+        assert!(layer_tree.contains(
+            "\"text\":\"                                                    ファイルサーバ"
+        ));
+        assert!(layer_tree.contains("\"fillColor\":\"#000080\""));
+        assert!(layer_tree.contains("\"strokeColor\":\"#dddddd\""));
+        assert!(layer_tree.contains("\"pathClosed\":true"));
+        assert!(layer_tree.contains("\"strokeWidth\":0.139"));
+        assert!(layer_tree.contains("\"strokeWidth\":0.500"));
+        assert!(layer_tree.contains("\"strokeWidth\":2.250"));
+        assert!(layer_tree.contains("\"pathPointCount\":2"));
+        assert!(layer_tree.contains("\"pathPointCount\":3"));
+        assert!(layer_tree.contains(
+            "\"projectionViewport\":{\"x\":46.001,\"y\":38.700,\"width\":1021.318,\"height\":677.301}"
+        ));
+        assert!(layer_tree.contains(
+            "\"projectionExtent\":{\"left\":-16154,\"top\":-16224,\"right\":-5612,\"bottom\":-9344}"
+        ));
+
+        let svg = core.render_page_svg(0).unwrap();
+        assert!(svg.contains("class=\"rjtd-fdm-vector-primitives\""));
+        assert!(svg.contains("class=\"rjtd-fdm-vector-primitive\""));
+        assert!(svg.contains("data-projection=\"fdmVectorPrimitiveReferenceProjection\""));
+        assert!(svg.contains("data-geometry-decoded=\"true\""));
+        assert!(svg.contains("data-renderable=\"true\""));
+        assert!(svg.contains("data-marker-hex=\"ff000160\""));
+        assert!(svg.contains("data-marker-hex=\"ff000460\""));
+        assert!(svg.contains("data-marker-hex=\"ff000660\""));
+        assert!(svg.contains("data-marker-hex=\"ff000960\""));
+        assert!(svg.contains("data-marker-hex=\"00000460\""));
+        assert!(svg.contains("data-marker-hex=\"00000660\""));
+        assert!(svg.contains("data-marker-hex=\"00000960\""));
+        assert!(svg.contains("data-primitive-kind=\"ellipse\""));
+        assert!(svg.contains("data-primitive-kind=\"cubicBezier\""));
+        assert!(svg.contains("<ellipse class=\"rjtd-fdm-vector-primitive\""));
+        assert!(svg.contains("<path class=\"rjtd-fdm-vector-primitive\""));
+        assert!(svg.contains(" C "));
+        assert!(svg.contains("data-style-word=\"0x0088\""));
+        assert!(svg.contains("data-fill-color=\"#ffffff\""));
+        assert!(svg.contains("data-stroke-width=\"0.139\""));
+        assert!(svg.contains("stroke-width=\"0.500\""));
+        assert!(svg.contains("data-path-closed=\"true\""));
+        assert!(svg.contains("fill=\"#000000\""));
+        assert!(svg.contains("fill=\"#008000\""));
+        assert!(svg.contains("fill=\"#000080\""));
+        assert!(svg.contains("data-row-index=\"23\""));
+        assert!(svg.contains("data-row-index=\"33\""));
+        assert!(!svg.contains("class=\"rjtd-fdm-command-diagnostics\""));
+        assert!(!svg.contains("class=\"rjtd-fdm-frame-diagnostics\""));
     }
 
     #[test]
@@ -21161,9 +23082,13 @@ mod tests {
     }
 
     fn document_text_fixture() -> Vec<u8> {
+        document_text_fixture_for("銀河")
+    }
+
+    fn document_text_fixture_for(text: &str) -> Vec<u8> {
         let mut bytes = b"SsmgV.01".to_vec();
         bytes.extend_from_slice(&[0x00, 0x1f]);
-        for unit in "銀河".encode_utf16() {
+        for unit in text.encode_utf16() {
             bytes.extend_from_slice(&unit.to_be_bytes());
         }
         bytes

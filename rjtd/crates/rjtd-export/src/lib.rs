@@ -1732,6 +1732,28 @@ mod tests {
                     if !pdf.windows(12).any(|window| window == b"/CIDFontType") {
                         failures.push(format!("{}: missing CID font resource", path.display()));
                     }
+                    if path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|file_name| file_name == "a6.jtd")
+                    {
+                        let page_object_count = pdf_page_object_count(&pdf);
+                        if page_object_count != 114 {
+                            failures.push(format!(
+                                "{}: expected 114 PDF page objects, got {page_object_count}",
+                                path.display()
+                            ));
+                        }
+                        if !pdf.windows(10).any(|window| window == b"/Count 114") {
+                            failures.push(format!("{}: missing /Count 114", path.display()));
+                        }
+                        if pdf_byte_pattern_count(&pdf, b"/MediaBox [0 0 297.675") != 114 {
+                            failures.push(format!(
+                                "{}: A6 portrait MediaBox does not cover all pages",
+                                path.display()
+                            ));
+                        }
+                    }
                     pdf_count += 1;
                     total_pdf_bytes += pdf.len();
                 }
@@ -1742,6 +1764,16 @@ mod tests {
         assert_eq!(failures, Vec::<String>::new());
         assert!(pdf_count >= 1);
         assert!(total_pdf_bytes > pdf_count * 512);
+    }
+
+    fn pdf_page_object_count(pdf: &[u8]) -> usize {
+        pdf_byte_pattern_count(pdf, b"/Type /Page\n")
+    }
+
+    fn pdf_byte_pattern_count(pdf: &[u8], pattern: &[u8]) -> usize {
+        pdf.windows(pattern.len())
+            .filter(|window| *window == pattern)
+            .count()
     }
 
     #[test]
