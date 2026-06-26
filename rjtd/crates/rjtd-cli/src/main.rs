@@ -4311,6 +4311,14 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("doc-info") => {
+            let path = required_path(args.next(), "doc-info")?;
+            let bytes = read_file(&path)?;
+            let mut core = DocumentCore::from_bytes(&bytes).map_err(|error| error.to_string())?;
+            core.set_file_name(&path);
+            print_doc_info(&core)?;
+            Ok(())
+        }
         Some("page-layer-tree") => {
             let path = required_path(args.next(), "page-layer-tree")?;
             let page_index = required_page_index(args.next(), "page-layer-tree")?;
@@ -4551,12 +4559,110 @@ Usage:
   rjtd text-position-context <file.jtd>
   rjtd text-position-line-context <file.jtd>
   rjtd text-position-delta-scan <file.jtd>
+  rjtd doc-info <file.jtd>
   rjtd page-info <file.jtd> <zero-based-page-index>
   rjtd page-layer-tree <file.jtd> <zero-based-page-index>
   rjtd page-svg <file.jtd> <zero-based-page-index>
   rjtd export <file.jtd> --format <json|md|text|html|pdf> [-o output.pdf]
 ",
     )
+}
+
+fn print_doc_info(core: &DocumentCore) -> Result<(), String> {
+    let raw = core.get_document_info();
+    // Parse the JSON and emit as tab-separated key-value lines for easy grepping.
+    // Only scalar fields are shown; array fields show their count.
+    let pairs: Vec<(&str, &str)> = vec![
+        ("format",          "JTD"),
+        ("engine",          "rjtd"),
+    ];
+    for (k, v) in &pairs {
+        write_stdout_line(&format!("{k}\t{v}"))?;
+    }
+
+    // Extract scalar string/bool/number values from the raw JSON.
+    for key in &[
+        "sourceFormat",
+        "fileName",
+        "pageCount",
+        "sectionCount",
+        "encrypted",
+        "writingMode",
+        "writingModeDecoded",
+        "writingModeCandidateFromPaperMark",
+        "writingModeCandidateDecoded",
+        "fallbackFont",
+        "blockCount",
+        "rawStreamCount",
+        "styleStreamCount",
+        "styleCandidateCount",
+        "fontCount",
+        "autoTextCount",
+        "tocEntryCount",
+        "pageMarkCount",
+        "paperMarkCount",
+        "objectStreamCandidateCount",
+        "objectFrameRecordCount",
+        "objectEmbeddingFrameCount",
+        "textCountRangeCount",
+        "textControlBoundaryCount",
+        "textBoundaryCandidateCount",
+        "textParagraphBoundaryCandidateCount",
+        "tableCandidateCount",
+    ] {
+        if let Some(value) = json_extract_scalar(&raw, key) {
+            write_stdout_line(&format!("{key}\t{value}"))?;
+        }
+    }
+
+    // fontsUsed is a string array — join with comma
+    if let Some(arr) = json_extract_string_array(&raw, "fontsUsed") {
+        write_stdout_line(&format!("fontsUsed\t{}", arr.join(", ")))?;
+    }
+    if let Some(arr) = json_extract_string_array(&raw, "styleCandidateNames") {
+        write_stdout_line(&format!("styleCandidateNames\t{}", arr.join(", ")))?;
+    }
+    Ok(())
+}
+
+/// Extract a scalar value (string, bool, number) for `key` from a flat JSON object.
+fn json_extract_scalar<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let pattern = format!("\"{}\":", key);
+    let start = json.find(&pattern)? + pattern.len();
+    let rest = json[start..].trim_start();
+    if rest.starts_with('"') {
+        // string value
+        let inner = &rest[1..];
+        let end = inner.find('"')?;
+        Some(&inner[..end])
+    } else if rest.starts_with('{') || rest.starts_with('[') {
+        None // skip objects/arrays
+    } else {
+        // number / bool / null — up to next comma or closing brace
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        Some(rest[..end].trim())
+    }
+}
+
+/// Extract an array of strings for `key` from a flat JSON object.
+fn json_extract_string_array(json: &str, key: &str) -> Option<Vec<String>> {
+    let pattern = format!("\"{}\":[", key);
+    let start = json.find(&pattern)? + pattern.len();
+    let rest = &json[start..];
+    let end = rest.find(']')?;
+    let inner = &rest[..end];
+    let values = inner
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.starts_with('"') && s.ends_with('"') {
+                Some(s[1..s.len() - 1].to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    Some(values)
 }
 
 fn print_entry_size(

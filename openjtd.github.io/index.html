@@ -311,6 +311,89 @@
     line-height: var(--line-height-body);
     color: var(--color-gray-900);
   }
+
+  /* 情報モーダル */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal {
+    background: var(--color-white);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.22);
+    padding: var(--sp-3);
+    width: min(560px, 92vw);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .modal__header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    border-bottom: 1px solid var(--color-gray-100);
+    padding-bottom: var(--sp-1);
+  }
+  .modal__title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--color-gray-900);
+    flex: 1;
+  }
+  .modal__close {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    color: var(--color-gray-600);
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+  }
+  .modal__close:hover { background: var(--color-gray-100); }
+  .modal__body {
+    overflow-y: auto;
+    flex: 1;
+  }
+  .info-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+  }
+  .info-table th, .info-table td {
+    text-align: left;
+    padding: 5px var(--sp-1);
+    border-bottom: 1px solid var(--color-gray-100);
+    vertical-align: top;
+  }
+  .info-table th {
+    color: var(--color-gray-600);
+    font-weight: 700;
+    white-space: nowrap;
+    width: 46%;
+  }
+  .info-table td {
+    color: var(--color-gray-900);
+    word-break: break-all;
+  }
+  .info-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .info-badge--vertical  { background: var(--color-key-100);   color: var(--color-key-700); }
+  .info-badge--horizontal{ background: var(--color-gray-100); color: var(--color-gray-700); }
+  .info-badge--yes  { background: #d4edda; color: #155724; }
+  .info-badge--no   { background: var(--color-gray-100); color: var(--color-gray-700); }
 </style>
 </head>
 <body>
@@ -348,11 +431,24 @@
       <button id="tab-svg" class="tab-btn active">ページ表示</button>
       <button id="tab-text" class="tab-btn">テキスト</button>
     </div>
+    <button id="btn-info" class="btn btn--ghost" title="ドキュメント情報">ⓘ</button>
     <button id="btn-close" class="btn btn--ghost">✕ 閉じる</button>
   </div>
   <div id="content-area">
     <div id="svg-container"></div>
     <div id="text-container" style="display:none"></div>
+  </div>
+</div>
+
+<div id="info-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="info-modal-title">
+  <div class="modal">
+    <div class="modal__header">
+      <span class="modal__title" id="info-modal-title">ドキュメント情報</span>
+      <button class="modal__close" id="btn-info-close" aria-label="閉じる">✕</button>
+    </div>
+    <div class="modal__body">
+      <table class="info-table" id="info-table"></table>
+    </div>
   </div>
 </div>
 
@@ -364,6 +460,7 @@ let currentPage = 0;
 let totalPages = 0;
 let currentTab = 'svg';
 let isVertical = false;
+let docInfo = null;
 
 async function loadWasm() {
   await init();
@@ -414,8 +511,8 @@ async function openFile(file) {
     doc.setFileName(file.name);
     totalPages = doc.pageCount();
     currentPage = 0;
-    const info = JSON.parse(doc.getDocumentInfo());
-    isVertical = info.writingMode === 'vertical-rl';
+    docInfo = JSON.parse(doc.getDocumentInfo());
+    isVertical = docInfo.writingMode === 'vertical-rl';
     document.getElementById('filename').textContent = file.name;
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('viewer').style.display = 'flex';
@@ -429,11 +526,62 @@ async function openFile(file) {
 function closeViewer() {
   if (doc) { doc.free(); doc = null; }
   isVertical = false;
+  docInfo = null;
   document.getElementById('viewer').style.display = 'none';
   document.getElementById('drop-zone').style.display = 'flex';
   document.getElementById('svg-container').innerHTML = '';
   document.getElementById('text-container').textContent = '';
   setStatus('');
+}
+
+function openInfoModal() {
+  if (!docInfo) return;
+  const rows = [
+    ['ファイル名',     docInfo.fileName || '–'],
+    ['形式',           docInfo.sourceFormat || '–'],
+    ['エンジン',       docInfo.engine || '–'],
+    ['ページ数',       String(docInfo.pageCount ?? '–')],
+    ['文字方向',       writingModeBadge(docInfo.writingMode, docInfo.writingModeDecoded)],
+    ['組み版候補',     docInfo.writingModeCandidateFromPaperMark
+                        ? writingModeBadge(docInfo.writingModeCandidateFromPaperMark, true)
+                        : '<span style="color:var(--color-gray-536)">–</span>'],
+    ['フォント（使用）', (docInfo.fontsUsed || []).join(', ') || '–'],
+    ['フォント数',     String(docInfo.fontCount ?? '–')],
+    ['段落ブロック数', String(docInfo.blockCount ?? '–')],
+    ['スタイル候補',   (docInfo.styleCandidateNames || []).join(', ') || '–'],
+    ['目次エントリ数', String(docInfo.tocEntryCount ?? '–')],
+    ['表候補数',       String(docInfo.tableCandidateCount ?? '–')],
+    ['暗号化',         boolBadge(docInfo.encrypted)],
+  ];
+  const tbody = rows.map(([k, v]) =>
+    `<tr><th>${escHtml(k)}</th><td>${v}</td></tr>`
+  ).join('');
+  document.getElementById('info-table').innerHTML = tbody;
+  document.getElementById('info-modal').classList.remove('hidden');
+}
+
+function closeInfoModal() {
+  document.getElementById('info-modal').classList.add('hidden');
+}
+
+function writingModeBadge(mode, decoded) {
+  const isV = mode === 'vertical-rl';
+  const cls = isV ? 'info-badge--vertical' : 'info-badge--horizontal';
+  const label = isV ? '縦書き' : '横書き';
+  const dec = decoded
+    ? ' <span class="info-badge info-badge--yes">検出済</span>'
+    : ' <span class="info-badge info-badge--no">推定</span>';
+  return `<span class="info-badge ${cls}">${label}</span>${dec}`;
+}
+
+function boolBadge(val) {
+  return val
+    ? '<span class="info-badge info-badge--yes">あり</span>'
+    : '<span class="info-badge info-badge--no">なし</span>';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // イベント
@@ -460,7 +608,15 @@ document.getElementById('btn-next').addEventListener('click', () => {
 });
 document.getElementById('tab-svg').addEventListener('click', () => switchTab('svg'));
 document.getElementById('tab-text').addEventListener('click', () => switchTab('text'));
+document.getElementById('btn-info').addEventListener('click', openInfoModal);
+document.getElementById('btn-info-close').addEventListener('click', closeInfoModal);
 document.getElementById('btn-close').addEventListener('click', closeViewer);
+document.getElementById('info-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeInfoModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeInfoModal();
+});
 
 loadWasm();
 </script>

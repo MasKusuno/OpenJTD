@@ -4745,6 +4745,75 @@ fn export_command_rejects_unknown_format() {
     );
 }
 
+#[test]
+fn doc_info_command_outputs_key_value_pairs() {
+    let path = tiny_cfb_path();
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("doc-info")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(&path).unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("format\tJTD"), "missing format line: {stdout}");
+    assert!(stdout.contains("engine\trjtd"), "missing engine line: {stdout}");
+    assert!(stdout.contains("pageCount\t"), "missing pageCount: {stdout}");
+    assert!(stdout.contains("writingMode\t"), "missing writingMode: {stdout}");
+    assert!(stdout.contains("writingModeDecoded\t"), "missing writingModeDecoded: {stdout}");
+}
+
+#[test]
+fn doc_info_reports_vertical_for_hello_v() {
+    let samples = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join("rjtd-testdata/local-samples");
+    let path = samples.join("hello-v.jtd");
+    if !path.exists() {
+        return;
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("doc-info")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("writingMode\tvertical-rl"),
+        "hello-v.jtd should report vertical-rl: {stdout}"
+    );
+    assert!(
+        stdout.contains("writingModeDecoded\ttrue"),
+        "hello-v.jtd should report writingModeDecoded=true: {stdout}"
+    );
+}
+
+#[test]
+fn doc_info_reports_horizontal_for_hello_h() {
+    let samples = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join("rjtd-testdata/local-samples");
+    let path = samples.join("hello-h.jtd");
+    if !path.exists() {
+        return;
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_rjtd"))
+        .arg("doc-info")
+        .arg(&path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("writingMode\thorizontal"),
+        "hello-h.jtd should report horizontal: {stdout}"
+    );
+}
+
 fn document_text_fixture() -> Vec<u8> {
     let mut bytes = b"SsmgV.01".to_vec();
     bytes.extend_from_slice(&[0x00, 0x1f]);
