@@ -39605,6 +39605,33 @@ mod tests {
     }
 
     #[test]
+    fn hello_v_jtd_from_bytes_detects_vertical_writing_mode() {
+        let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("rjtd-testdata/local-samples/hello-v.jtd");
+        if !sample_path.exists() {
+            return;
+        }
+        let bytes = fs::read(&sample_path).unwrap();
+        let core = DocumentCore::from_bytes(&bytes).unwrap();
+        assert_eq!(
+            core.writing_mode(),
+            WritingMode::VerticalRl,
+            "hello-v.jtd should be detected as vertical-rl from DocumentViewStyles record 0x1001"
+        );
+        assert!(
+            core.get_document_info().contains("\"writingMode\":\"vertical-rl\""),
+            "getDocumentInfo should report vertical-rl"
+        );
+        let svg = core.render_page_svg(0).unwrap();
+        assert!(
+            svg.contains("writing-mode=\"vertical-rl\""),
+            "hello-v.jtd page SVG should contain writing-mode=vertical-rl, got: {}",
+            &svg[..svg.len().min(500)]
+        );
+    }
+
+    #[test]
     fn document_core_applies_sample_page_size_orientation_and_writing_hints() {
         for (file_name, expected_width, expected_height, expected_landscape) in [
             ("a5.jtd", 559.4, 793.7, false),

@@ -339,9 +339,9 @@
 
 <div id="viewer">
   <div class="toolbar">
-    <button id="btn-prev" class="btn btn--outline">◀ 前</button>
+    <button id="btn-prev" class="btn btn--outline">◀ 戻る</button>
     <span id="page-info" class="toolbar__page-info">1 / 1</span>
-    <button id="btn-next" class="btn btn--outline">次 ▶</button>
+    <button id="btn-next" class="btn btn--outline">進む ▶</button>
     <span id="filename" class="toolbar__filename"></span>
     <span id="status" class="toolbar__status"></span>
     <div class="tab-group">
@@ -363,6 +363,7 @@ let doc = null;
 let currentPage = 0;
 let totalPages = 0;
 let currentTab = 'svg';
+let isVertical = false;
 
 async function loadWasm() {
   await init();
@@ -410,8 +411,11 @@ async function openFile(file) {
   try {
     if (doc) { doc.free(); doc = null; }
     doc = new HwpDocument(bytes);
+    doc.setFileName(file.name);
     totalPages = doc.pageCount();
     currentPage = 0;
+    const info = JSON.parse(doc.getDocumentInfo());
+    isVertical = info.writingMode === 'vertical-rl';
     document.getElementById('filename').textContent = file.name;
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('viewer').style.display = 'flex';
@@ -424,6 +428,7 @@ async function openFile(file) {
 
 function closeViewer() {
   if (doc) { doc.free(); doc = null; }
+  isVertical = false;
   document.getElementById('viewer').style.display = 'none';
   document.getElementById('drop-zone').style.display = 'flex';
   document.getElementById('svg-container').innerHTML = '';
