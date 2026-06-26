@@ -1005,6 +1005,7 @@ pub struct DocumentCore {
     show_transparent_borders: bool,
     clip_enabled: bool,
     writing_mode: WritingMode,
+    writing_mode_decoded: bool,
     next_snapshot_id: u32,
     snapshots: Vec<DocumentSnapshot>,
     caret_section: u32,
@@ -1173,6 +1174,8 @@ impl DocumentCore {
     pub fn from_document(document: Document) -> Self {
         let page_layout = page_layout_from_document(&document);
         let writing_mode = writing_mode_from_document_view_styles(document.unknown_styles());
+        let writing_mode_decoded = writing_mode != WritingMode::Horizontal
+            || has_document_view_styles_records(document.unknown_styles());
         let pages = paginate_document_text(&document, page_layout, writing_mode);
         Self {
             document,
@@ -1185,6 +1188,7 @@ impl DocumentCore {
             show_transparent_borders: false,
             clip_enabled: true,
             writing_mode,
+            writing_mode_decoded,
             next_snapshot_id: 1,
             snapshots: Vec::new(),
             caret_section: 0,
@@ -1231,13 +1235,14 @@ impl DocumentCore {
             .map(|m| format!("\"{}\"", m.as_str()))
             .unwrap_or_else(|| "null".to_string());
         format!(
-            "{{\"version\":\"0.0.0\",\"format\":\"JTD\",\"engine\":\"rjtd\",\"sourceFormat\":\"{}\",\"fileName\":{},\"sectionCount\":1,\"pageCount\":{},\"encrypted\":false,\"hwp3Variant\":false,\"fallbackFont\":{},\"fontsUsed\":{},\"writingMode\":\"{}\",\"writingModeDecoded\":false,\"writingModeCandidateFromPaperMark\":{},\"writingModeCandidateDecoded\":false,\"blockCount\":{},\"rawStreamCount\":{},\"styleStreamCount\":{},\"styleCandidateCount\":{},\"styleCandidateNames\":{},\"styleStreams\":{},\"fontCount\":{},\"fontTable\":{},\"autoTextCount\":{},\"autoTextCandidates\":{},\"tocEntryCount\":{},\"tocEntries\":{},\"pageMarkCount\":{},\"pageMarks\":{},\"paperMarkCount\":{},\"paperMarks\":{},\"objectStreamCandidateCount\":{},\"objectStreamCandidates\":{},\"objectFrameRecordCount\":{},\"objectFrameRecords\":{},\"objectEmbeddingFrameCount\":{},\"objectEmbeddingFrames\":{},\"textCountRangeCount\":{},\"textCountRanges\":{},\"textControlBoundaryCount\":{},\"textControlBoundaries\":{},\"textBoundaryCandidateCount\":{},\"textBoundaryCandidates\":{},\"textParagraphBoundaryCandidateCount\":{},\"textParagraphBoundaryCandidates\":{},\"tableCandidateCount\":{},\"tableCandidates\":{}}}",
+            "{{\"version\":\"0.0.0\",\"format\":\"JTD\",\"engine\":\"rjtd\",\"sourceFormat\":\"{}\",\"fileName\":{},\"sectionCount\":1,\"pageCount\":{},\"encrypted\":false,\"hwp3Variant\":false,\"fallbackFont\":{},\"fontsUsed\":{},\"writingMode\":\"{}\",\"writingModeDecoded\":{},\"writingModeCandidateFromPaperMark\":{},\"writingModeCandidateDecoded\":false,\"blockCount\":{},\"rawStreamCount\":{},\"styleStreamCount\":{},\"styleCandidateCount\":{},\"styleCandidateNames\":{},\"styleStreams\":{},\"fontCount\":{},\"fontTable\":{},\"autoTextCount\":{},\"autoTextCandidates\":{},\"tocEntryCount\":{},\"tocEntries\":{},\"pageMarkCount\":{},\"pageMarks\":{},\"paperMarkCount\":{},\"paperMarks\":{},\"objectStreamCandidateCount\":{},\"objectStreamCandidates\":{},\"objectFrameRecordCount\":{},\"objectFrameRecords\":{},\"objectEmbeddingFrameCount\":{},\"objectEmbeddingFrames\":{},\"textCountRangeCount\":{},\"textCountRanges\":{},\"textControlBoundaryCount\":{},\"textControlBoundaries\":{},\"textBoundaryCandidateCount\":{},\"textBoundaryCandidates\":{},\"textParagraphBoundaryCandidateCount\":{},\"textParagraphBoundaryCandidates\":{},\"tableCandidateCount\":{},\"tableCandidates\":{}}}",
             APP_SOURCE_FORMAT,
             json_string(&self.file_name),
             self.page_count(),
             json_string(fallback_font),
             string_array_json(&font_names),
             self.writing_mode.as_str(),
+            self.writing_mode_decoded,
             writing_mode_candidate_str,
             self.document.blocks().len(),
             self.document.raw_streams().len(),
@@ -20155,6 +20160,13 @@ fn paper_marks_json(paper_marks: &[DocumentPaperMark]) -> String {
 // RFC 0007 §PaperMark: flag 0x00010011 appears exclusively in Ginga vertical-writing
 // samples (a5/a6/b6/46) and never in horizontal samples. Not yet formally decoded
 // (TODO 327), so the result is diagnostic-only and must not gate WritingMode directly.
+fn has_document_view_styles_records(styles: &[UnknownStyle]) -> bool {
+    styles
+        .iter()
+        .filter(|style| style.name() == Some(DOCUMENT_VIEW_STYLES_PATH))
+        .any(|style| !summarize_style_stream(style.payload()).records().is_empty())
+}
+
 fn writing_mode_from_document_view_styles(styles: &[UnknownStyle]) -> WritingMode {
     let has_record_0x1001 = styles
         .iter()
@@ -21791,9 +21803,10 @@ fn page_layer_tree_json(
     let layout = core.page_layout;
     let font_family = document_font_family_css(&core.document);
     let mut output = format!(
-        "{{\"schemaVersion\":1,\"schemaMinorVersion\":0,\"schema\":{{\"major\":1,\"minor\":0}},\"resourceTableVersion\":1,\"resourceTableMinorVersion\":0,\"resourceTable\":{{\"major\":1,\"minor\":0}},\"unit\":\"px\",\"coordinateSystem\":\"page\",\"profile\":{},\"writingMode\":\"{}\",\"writingModeDecoded\":false,\"outputOptions\":{{\"showParagraphMarks\":{},\"showControlCodes\":{},\"showTransparentBorders\":{},\"clipEnabled\":{},\"debugOverlay\":false}},\"pageWidth\":{:.1},\"pageHeight\":{:.1},\"root\":{{\"kind\":\"leaf\",\"bounds\":{{\"x\":0.0,\"y\":0.0,\"width\":{:.1},\"height\":{:.1}}},\"ops\":[",
+        "{{\"schemaVersion\":1,\"schemaMinorVersion\":0,\"schema\":{{\"major\":1,\"minor\":0}},\"resourceTableVersion\":1,\"resourceTableMinorVersion\":0,\"resourceTable\":{{\"major\":1,\"minor\":0}},\"unit\":\"px\",\"coordinateSystem\":\"page\",\"profile\":{},\"writingMode\":\"{}\",\"writingModeDecoded\":{},\"outputOptions\":{{\"showParagraphMarks\":{},\"showControlCodes\":{},\"showTransparentBorders\":{},\"clipEnabled\":{},\"debugOverlay\":false}},\"pageWidth\":{:.1},\"pageHeight\":{:.1},\"root\":{{\"kind\":\"leaf\",\"bounds\":{{\"x\":0.0,\"y\":0.0,\"width\":{:.1},\"height\":{:.1}}},\"ops\":[",
         json_string(profile),
         core.writing_mode.as_str(),
+        core.writing_mode_decoded,
         core.show_paragraph_marks,
         core.show_control_codes,
         core.show_transparent_borders,
@@ -39576,6 +39589,8 @@ mod tests {
         ]);
         let core_v = DocumentCore::from_bytes(&bytes_v).unwrap();
         assert_eq!(core_v.writing_mode(), WritingMode::VerticalRl);
+        assert!(core_v.get_document_info().contains("\"writingModeDecoded\":true"));
+        assert!(core_v.get_page_layer_tree(0).unwrap().contains("\"writingModeDecoded\":true"));
 
         // DocumentViewStyles whose first sequential record is 0x1002 (not 0x1001) → horizontal
         let horizontal_styles = document_view_styles_sequential_fixture(0x1002);
@@ -39585,6 +39600,8 @@ mod tests {
         ]);
         let core_h = DocumentCore::from_bytes(&bytes_h).unwrap();
         assert_eq!(core_h.writing_mode(), WritingMode::Horizontal);
+        assert!(core_h.get_document_info().contains("\"writingModeDecoded\":true"));
+        assert!(core_h.get_page_layer_tree(0).unwrap().contains("\"writingModeDecoded\":true"));
     }
 
     #[test]
