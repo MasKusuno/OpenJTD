@@ -287,12 +287,9 @@
   }
 
   #svg-container {
-    width: 100%;
-    max-width: 860px;
+    flex-shrink: 0;
   }
   #svg-container svg {
-    width: 100%;
-    height: auto;
     display: block;
     background: var(--color-white);
     box-shadow: var(--shadow-2);
@@ -431,6 +428,11 @@
       <button id="tab-svg" class="tab-btn active">ページ表示</button>
       <button id="tab-text" class="tab-btn">テキスト</button>
     </div>
+    <div class="tab-group" id="zoom-group">
+      <button id="btn-zoom-fit"   class="tab-btn active" title="ページ全体を表示">全体</button>
+      <button id="btn-zoom-width" class="tab-btn"        title="幅に合わせる">幅</button>
+      <button id="btn-zoom-height"class="tab-btn"        title="高さに合わせる">高さ</button>
+    </div>
     <button id="btn-info" class="btn btn--ghost" title="ドキュメント情報">ⓘ</button>
     <button id="btn-close" class="btn btn--ghost">✕ 閉じる</button>
   </div>
@@ -461,6 +463,9 @@ let totalPages = 0;
 let currentTab = 'svg';
 let isVertical = false;
 let docInfo = null;
+// 'fit' | 'width' | 'height'
+let zoomMode = 'fit';
+let resizeObserver = null;
 
 async function loadWasm() {
   await init();
@@ -468,6 +473,35 @@ async function loadWasm() {
 
 function setStatus(msg) {
   document.getElementById('status').textContent = msg;
+}
+
+function applySvgZoom() {
+  const svgEl = document.querySelector('#svg-container svg');
+  if (!svgEl) return;
+  const area = document.getElementById('content-area');
+  // padding: var(--sp-3) = 24px each side
+  const pad = 24;
+  const areaW = area.clientWidth  - pad * 2;
+  const areaH = area.clientHeight - pad * 2;
+  // intrinsic size from SVG attributes
+  const natW = parseFloat(svgEl.getAttribute('width'))  || svgEl.viewBox.baseVal.width  || areaW;
+  const natH = parseFloat(svgEl.getAttribute('height')) || svgEl.viewBox.baseVal.height || areaH;
+
+  let w, h;
+  if (zoomMode === 'width') {
+    w = areaW;
+    h = natH * (areaW / natW);
+  } else if (zoomMode === 'height') {
+    h = areaH;
+    w = natW * (areaH / natH);
+  } else {
+    // fit: show the full page
+    const scale = Math.min(areaW / natW, areaH / natH);
+    w = natW * scale;
+    h = natH * scale;
+  }
+  svgEl.style.width  = `${Math.round(w)}px`;
+  svgEl.style.height = `${Math.round(h)}px`;
 }
 
 function renderPage() {
@@ -480,9 +514,18 @@ function renderPage() {
   const svgContainer = document.getElementById('svg-container');
   try {
     svgContainer.innerHTML = doc.renderPageSvg(currentPage);
+    applySvgZoom();
   } catch (e) {
     svgContainer.innerHTML = `<p style="color:#c00;padding:16px">レンダリングエラー: ${e}</p>`;
   }
+}
+
+function setZoomMode(mode) {
+  zoomMode = mode;
+  ['fit','width','height'].forEach(m => {
+    document.getElementById(`btn-zoom-${m}`).classList.toggle('active', m === mode);
+  });
+  applySvgZoom();
 }
 
 function showText() {
@@ -496,6 +539,7 @@ function switchTab(tab) {
   const textContainer = document.getElementById('text-container');
   document.getElementById('tab-svg').classList.toggle('active', tab === 'svg');
   document.getElementById('tab-text').classList.toggle('active', tab === 'text');
+  document.getElementById('zoom-group').style.display = tab === 'svg' ? '' : 'none';
   svgContainer.style.display = tab === 'svg' ? '' : 'none';
   textContainer.style.display = tab === 'text' ? '' : 'none';
   if (tab === 'svg') renderPage();
@@ -517,6 +561,11 @@ async function openFile(file) {
     document.getElementById('drop-zone').style.display = 'none';
     document.getElementById('viewer').style.display = 'flex';
     setStatus('');
+    // watch content-area resize so zoom stays correct
+    if (!resizeObserver) {
+      resizeObserver = new ResizeObserver(() => applySvgZoom());
+      resizeObserver.observe(document.getElementById('content-area'));
+    }
     switchTab('svg');
   } catch (e) {
     setStatus(`エラー: ${e}`);
@@ -527,6 +576,7 @@ function closeViewer() {
   if (doc) { doc.free(); doc = null; }
   isVertical = false;
   docInfo = null;
+  if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
   document.getElementById('viewer').style.display = 'none';
   document.getElementById('drop-zone').style.display = 'flex';
   document.getElementById('svg-container').innerHTML = '';
@@ -608,6 +658,9 @@ document.getElementById('btn-next').addEventListener('click', () => {
 });
 document.getElementById('tab-svg').addEventListener('click', () => switchTab('svg'));
 document.getElementById('tab-text').addEventListener('click', () => switchTab('text'));
+document.getElementById('btn-zoom-fit').addEventListener('click',    () => setZoomMode('fit'));
+document.getElementById('btn-zoom-width').addEventListener('click',  () => setZoomMode('width'));
+document.getElementById('btn-zoom-height').addEventListener('click', () => setZoomMode('height'));
 document.getElementById('btn-info').addEventListener('click', openInfoModal);
 document.getElementById('btn-info-close').addEventListener('click', closeInfoModal);
 document.getElementById('btn-close').addEventListener('click', closeViewer);
